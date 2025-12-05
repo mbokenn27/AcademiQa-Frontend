@@ -6,6 +6,11 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
+// === HTTP BASES ===
+const API_ROOT = (import.meta.env.VITE_API_BASE || 'http://localhost:8000').replace(/\/+$/, '');
+const API_BASE = /\/api\/?$/.test(API_ROOT) ? API_ROOT : `${API_ROOT}/api`;
+
+
 const signUpSchema = z
   .object({
     username: z.string().min(3, "Username must be at least 3 characters"),
@@ -42,7 +47,7 @@ export default function SignUp() {
     setIsSubmitting(true);
 
     try {
-      const response = await fetch("http://localhost:8000/api/register/", {
+      const response = await fetch(`${API_BASE}/auth/register/`, {
         method: "POST",
         headers: { 
           "Content-Type": "application/json",
@@ -76,6 +81,7 @@ export default function SignUp() {
           setError(result.detail || "Registration failed. Please try again.");
         }
       }
+      
     } catch (err: any) {
       console.error("Registration error:", err);
       setError("Network error. Please check your connection and try again.");
