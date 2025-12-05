@@ -1,126 +1,85 @@
 // src/contexts/AuthContext.tsx
-
 import React, { createContext, useContext, useEffect, useState } from "react";
-import { authService } from "@/services/auth";
-import type { User, LoginCredentials, SignUpData } from "@/services/auth";
+import { API_BASE, handle } from "@/lib/http";
+
+type User = any; // your shape
 
 interface AuthContextType {
   user: User | null;
-  login: (credentials: LoginCredentials) => Promise<void>;
-  signup: (userData: SignUpData) => Promise<void>;
+  login: (data: { username: string; password: string }) => Promise<User>;
   logout: () => void;
-  loading: boolean;
-  isAuthenticated: boolean;
+  refresh: () => Promise<void>;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const AuthContext = createContext<AuthContextType>({} as any);
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
+export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
 
-  // ---------------------------
-  // Load stored user on startup
-  // ---------------------------
-  useEffect(() => {
-    const storedUser = localStorage.getItem("user");
-
-    if (storedUser) {
-      try {
-        setUser(JSON.parse(storedUser));
-      } catch {
-        console.warn("Failed to parse stored user.");
-      }
+  const loadUser = async () => {
+    const token = localStorage.getItem("access_token");
+    if (!token) return;
+    const res = await fetch(`${API_BASE}/auth/user/`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.ok) {
+      setUser(await res.json());
+    } else {
+      setUser(null);
     }
-
-    setLoading(false);
-  }, []);
-
-  // ---------------------------
-  // Silent refresh every 4 mins
-  // ---------------------------
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      const refreshToken = localStorage.getItem("refresh_token");
-      if (!refreshToken) return;
-
-      try {
-        const newTokens = await authService.refreshToken(refreshToken);
-
-        if (newTokens?.access_token) {
-          localStorage.setItem("access_token", newTokens.access_token);
-        }
-
-        if (newTokens?.refresh_token) {
-          localStorage.setItem("refresh_token", newTokens.refresh_token);
-        }
-
-        // Optionally re-fetch user if backend requires it
-        // const updatedUser = await authService.getCurrentUser();
-        // setUser(updatedUser);
-      } catch (err) {
-        console.warn("Silent refresh failed, logging out.");
-        logout();
-      }
-    }, 1000 * 60 * 4);
-
-    return () => clearInterval(interval);
-  }, []);
-
-  // ---------------------------
-  // LOGIN
-  // ---------------------------
-  const login = async (credentials: LoginCredentials): Promise<void> => {
-    const { user, access_token, refresh_token } = await authService.login(credentials);
-
-    // Store tokens
-    localStorage.setItem("access_token", access_token);
-    localStorage.setItem("refresh_token", refresh_token);
-
-    // Store user
-    localStorage.setItem("user", JSON.stringify(user));
-
-    setUser(user);
   };
 
-  // ---------------------------
-  // SIGNUP
-  // ---------------------------
-  const signup = async (userData: SignUpData) => {
-    const { user, access_token, refresh_token } = await authService.signup(userData);
+  const login = async ({ username, password }: { username: string; password: string }) => {
+    // IMPORTANT: API_BASE already includes /api
+    const res = await fetch(`${API_BASE}/token/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data?.detail || "Invalid username or password");
+    }
+    localStorage.setItem("access_token", data.access);
+    localStorage.setItem("refresh_token", data.refresh);
 
-    localStorage.setItem("access_token", access_token);
-    localStorage.setItem("refresh_token", refresh_token);
-    localStorage.setItem("user", JSON.stringify(user));
-
-    setUser(user);
+    await loadUser();
+    return user as User;
   };
 
-  // ---------------------------
-  // LOGOUT
-  // ---------------------------
+  const refresh = async () => {
+    const refreshToken = localStorage.getItem("refresh_token");
+    if (!refreshToken) return;
+    const res = await fetch(`${API_BASE}/token/refresh/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh: refreshToken }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      localStorage.setItem("access_token", data.access);
+    } else {
+      localStorage.removeItem("access_token");
+      localStorage.removeItem("refresh_token");
+      setUser(null);
+    }
+  };
+
   const logout = () => {
-    authService.logout();
     localStorage.removeItem("access_token");
     localStorage.removeItem("refresh_token");
-    localStorage.removeItem("user");
     setUser(null);
   };
 
-  const value: AuthContextType = {
-    user,
-    login,
-    signup,
-    logout,
-    loading,
-    isAuthenticated: !!user,
-  };
+  useEffect(() => {
+    loadUser();
+  }, []);
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-}
+  return (
+    <AuthContext.Provider value={{ user, login, logout, refresh }}>
+      {children}
+    </AuthContext.Provider>
+  );
+};
 
-export function useAuth() {
-  const context = useContext(AuthContext);
-  if (!context) throw new Error("useAuth must be used within AuthProvider");
-  return context;
-}
+export const useAuth = () => useContext(AuthContext);

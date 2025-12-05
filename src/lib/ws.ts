@@ -1,11 +1,15 @@
-// path: client/src/lib/ws.ts
-export function resolveWsUrl(suffix = "/client/"): string {
-  const env = (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_WS_URL) || "";
-  const base = env.trim().replace(/\/+$/, "");
-  const raw = base ? `${base}${suffix}` :
-    `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws${suffix}`;
-  const url = new URL(raw);
-  const token = localStorage.getItem("access_token") || "";
-  if (token) url.searchParams.set("token", token); // if backend accepts ?token=
-  return url.toString();
+// src/lib/ws.ts
+export function resolveWsUrl(path = "/client/") {
+  const raw =
+    (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_WS_BASE) ||
+    (process.env.REACT_APP_WS_BASE as string) ||
+    window.location.origin.replace(/^http/i, "ws"); // http->ws, https->wss
+
+  const base = raw.replace(/\/+$/, ""); // trim trailing slash
+  const cleanPath = ("/ws/" + path.replace(/^\/+/, "")).replace(/\/{2,}/g, "/"); // ensure /ws/<...>
+
+  const token = localStorage.getItem("access_token");
+  return token
+    ? `${base}${cleanPath}?token=${encodeURIComponent(token)}`
+    : `${base}${cleanPath}`;
 }

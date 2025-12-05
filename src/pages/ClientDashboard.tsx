@@ -7,6 +7,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { useAuth } from '@/contexts/AuthContext'
 import { useWebSocket } from '@/hooks/useWebSocket'
 import { API_BASE, joinUrl } from "@/lib/http"  // WHY: single source of truth for API base/joins
+import { resolveWsUrl } from "@/lib/ws"            // <-- add this
+
 
 // Simple toast hook replacement
 const useToast = () => {
@@ -126,7 +128,7 @@ export default function ClientDashboard() {
   }
 
   // WebSocket for client dashboard updates
-  const { sendMessage: sendClientMessage } = useWebSocket('/ws/client/', (data) => {
+  const { sendMessage: sendClientMessage } = useWebSocket(resolveWsUrl("/client/"), (data) => {
     if (data.type === 'task_updated' && data.task) {
       setTasks(prev => prev.map(task => task.id === data.task.id ? { ...task, ...data.task } : task))
       if (selectedTask && selectedTask.id === data.task.id) setSelectedTask(prev => ({ ...prev!, ...data.task }))
@@ -140,7 +142,7 @@ export default function ClientDashboard() {
 
   // Task-specific WebSocket - reinitialize when selectedTask changes
   const { sendMessage: sendTaskMessage } = useWebSocket(
-    selectedTask ? `/ws/task/${selectedTask.id}/` : null,
+    selectedTask ? resolveWsUrl(`/task/${selectedTask.id}/`) : null,
     (data) => {
       if (data.type === 'chat_message' && data.message) {
         setChatMessages(prev => {

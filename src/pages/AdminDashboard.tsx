@@ -6,9 +6,8 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { useAuth } from '@/contexts/AuthContext'
 import { API_BASE, joinUrl } from "@/lib/http";
-import { useWebSocket } from "@/hooks/useWebSocket"; // use the same WS hook as client
-
-//import { useWebSocket } from '@/hooks/useWebSocket'
+import { useWebSocket } from "@/hooks/useWebSocket";
+import { resolveWsUrl } from "@/lib/ws";
 
 
 // Simple toast hook replacement
@@ -321,7 +320,9 @@ export default function AdminDashboard() {
   const typingTimeoutRef = useRef<NodeJS.Timeout>()
   
   // WebSocket for admin dashboard updates
-  const { sendMessage: sendAdminMessage } = useWebSocket('/ws/admin/', (data) => {
+  const { sendMessage: sendAdminMessage } = useWebSocket(
+  resolveWsUrl("/admin/"),
+  (data) => {
     console.log('Admin WS:', data);
 
     if (data.type === 'task_updated' && data.task) {
@@ -371,8 +372,8 @@ export default function AdminDashboard() {
 
   // Task-specific WebSocket - reinitialize when selectedTask changes
   const { sendMessage: sendTaskMessage } = useWebSocket(
-    selectedTask ? `/ws/task/${selectedTask.id}/` : null, 
-    (data) => {
+  selectedTask ? `/ws/task/${selectedTask.id}/` : null, 
+  (data) => {
       console.log('Task WebSocket message:', data);
       
       if (data.type === 'chat_message' && data.message) {
