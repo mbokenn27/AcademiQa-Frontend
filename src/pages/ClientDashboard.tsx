@@ -455,7 +455,7 @@ const createTask = async (e: React.FormEvent) => {
   setShowCreateTask(false); // close immediately for snappy UX
 
   try {
-    const newTask = await apiService.postFormData<any>('/api/tasks/', formData);
+    const newTask = await apiService.postFormData<any>('/tasks/', formData);
 
     // 4) Reconcile optimistic task with the real one
     setTasks(prev => prev.map(t => (t.id === tempId ? newTask : t)));
@@ -872,9 +872,20 @@ const requestRevision = async () => {
               <div className="w-14 h-14 bg-gradient-to-br from-blue-600 via-purple-600 to-indigo-600 rounded-2xl flex items-center justify-center shadow-xl">
                 <i className="ri-graduation-cap-line text-3xl text-white"></i>
               </div>
-              <div>
-                <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 bg-clip-text text-transparent">Student Portal</h1>
-                <p className="text-sm text-gray-600">Welcome back, {currentUser?.full_name || currentUser?.username}</p>
+
+              <div className="min-w-0">
+                <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 bg-clip-text text-transparent">
+                  Student Portal
+                </h1>
+                <p
+                  className="text-sm text-gray-600 truncate"
+                  title={`Welcome back, ${currentUser?.full_name || currentUser?.username || ''}`}
+                >
+                  Welcome back,{" "}
+                  <span className="font-medium inline-block max-w-[50vw] sm:max-w-[240px] truncate align-bottom">
+                    {currentUser?.full_name || currentUser?.username}
+                  </span>
+                </p>
               </div>
             </div>
             <div className="flex items-center gap-4">
