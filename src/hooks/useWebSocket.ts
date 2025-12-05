@@ -18,7 +18,7 @@ function getWsBase(): string {
 
   if (!base) {
     // derive from current page origin
-    base = window.location.origin.replace(/^http/, "ws");
+    base = "wss://academiqa-backend-production.up.railway.app";
   }
   // normalize: remove trailing slash
   return base.endsWith("/") ? base.slice(0, -1) : base;
