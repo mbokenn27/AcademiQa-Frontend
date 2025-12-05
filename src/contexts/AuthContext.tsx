@@ -19,7 +19,7 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const loadUser = async () => {
     const token = localStorage.getItem("access_token");
     if (!token) return;
-    const res = await fetch(`${API_BASE}/auth/user/`, {
+    const res = await fetch(`${API_BASE}/api/auth/user/`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.ok) {
@@ -31,7 +31,7 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
 
   const login = async ({ username, password }: { username: string; password: string }) => {
     // IMPORTANT: API_BASE already includes /api
-    const res = await fetch(`${API_BASE}/token/`, {
+    const res = await fetch(`${API_BASE}/api/token/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
@@ -50,7 +50,7 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const refresh = async () => {
     const refreshToken = localStorage.getItem("refresh_token");
     if (!refreshToken) return;
-    const res = await fetch(`${API_BASE}/token/refresh/`, {
+    const res = await fetch(`${API_BASE}/api/token/refresh/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh: refreshToken }),

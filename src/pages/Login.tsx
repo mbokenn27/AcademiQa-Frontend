@@ -40,7 +40,7 @@ export default function Login() {
       await login(data); // sets tokens; user state may not be immediate
 
       // Fetch fresh user to decide where to go (avoids relying on async state)
-      const res = await fetch(`${API_BASE}/auth/user/`, {
+      const res = await fetch(`${API_BASE}/api/auth/user/`, {
         headers: { Authorization: `Bearer ${localStorage.getItem("access_token") || ""}` },
       });
 
