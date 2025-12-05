@@ -428,11 +428,11 @@ export default function AdminDashboard() {
       setLoading(true)
       
       // Load current user
-      const userData = await apiService.get<User>('/api/auth/user/')
+      const userData = await apiService.get<User>('/auth/user/')
       setCurrentUser(userData)
 
       // Load tasks
-      const tasksData = await apiService.get<Task[]>('/api/tasks/')
+      const tasksData = await apiService.get<Task[]>('/tasks/')
       setTasks(tasksData)
       if (tasksData.length > 0) {
         setSelectedTask(tasksData[0])
@@ -456,7 +456,7 @@ export default function AdminDashboard() {
       const statsData = await apiService.get<{
         task_stats: TaskStats
         admin_stats: AdminStats
-      }>('/api/admin/stats/')
+      }>('/admin/stats/')
       setTaskStats(statsData.task_stats)
       setAdminStats(statsData.admin_stats)
     } catch (error) {
@@ -466,7 +466,7 @@ export default function AdminDashboard() {
 
   const loadChatMessages = async (taskId: number) => {
     try {
-      const messages = await apiService.get<ChatMessage[]>(`/api/tasks/${taskId}/chat/`)
+      const messages = await apiService.get<ChatMessage[]>(`/tasks/${taskId}/chat/`)
       setChatMessages(messages)
       
       // Auto-scroll after loading messages
@@ -475,7 +475,7 @@ export default function AdminDashboard() {
       }, 100);
       // Optional: Mark as read
       try {
-        await apiService.post(`/api/tasks/${taskId}/mark-read/`);
+        await apiService.post(`/tasks/${taskId}/mark-read/`);
       } catch {}
     } catch (error) {
       console.error('Failed to load chat messages:', error)
@@ -559,10 +559,10 @@ export default function AdminDashboard() {
           formData.append('file', file);
         });
 
-        await apiService.postFormData(`/api/tasks/${selectedTask.id}/chat/`, formData);
+        await apiService.postFormData(`/tasks/${selectedTask.id}/chat/`, formData);
       } else {
         // For text-only messages
-        await apiService.post(`/api/tasks/${selectedTask.id}/chat/`, { 
+        await apiService.post(`/tasks/${selectedTask.id}/chat/`, { 
           message: newMessage.trim() 
         });
       }
@@ -593,7 +593,7 @@ export default function AdminDashboard() {
 
   const acceptTask = async (taskId: number) => {
     try {
-      await apiService.post(`/api/admin/tasks/${taskId}/accept/`)
+      await apiService.post(`/admin/tasks/${taskId}/accept/`)
       
       // The WebSocket will handle the real-time update
       showToast("Task Accepted", "Student has been notified via email.")
@@ -624,7 +624,7 @@ export default function AdminDashboard() {
     setSelectedTask(prev => (prev && prev.id === taskId ? optimisticTask : prev));
 
     try {
-      await apiService.post(`/api/admin/tasks/${taskId}/accept-budget/`);
+      await apiService.post(`/admin/tasks/${taskId}/accept-budget/`);
       
       showToast("Budget Accepted", "Work will begin shortly. Student has been notified via email.");
     } catch (error) {
@@ -655,7 +655,7 @@ export default function AdminDashboard() {
     setSelectedTask(updatedTask);
 
     try {
-      await apiService.post(`/api/admin/tasks/${selectedTask.id}/propose-budget/`, {
+      await apiService.post(`/admin/tasks/${selectedTask.id}/propose-budget/`, {
         amount: newBudget,
         reason: negotiationReason.trim()
       });
@@ -680,7 +680,7 @@ export default function AdminDashboard() {
     if (!selectedTask || !rejectReason.trim()) return
     
     try {
-      await apiService.post(`/api/admin/tasks/${selectedTask.id}/reject/`, {
+      await apiService.post(`/admin/tasks/${selectedTask.id}/reject/`, {
         reason: rejectReason
       })
       
@@ -696,7 +696,7 @@ export default function AdminDashboard() {
 
   const submitForReview = async (taskId: number) => {
     try {
-      await apiService.post(`/api/admin/tasks/${taskId}/submit-review/`)
+      await apiService.post(`/admin/tasks/${taskId}/submit-review/`)
       
       showToast("Submitted for Review", "Task has been submitted for student review.")
     } catch (error) {
@@ -707,7 +707,7 @@ export default function AdminDashboard() {
 
   const markComplete = async (taskId: number) => {
     try {
-      await apiService.post(`/api/admin/tasks/${taskId}/mark-complete/`)
+      await apiService.post(`/admin/tasks/${taskId}/mark-complete/`)
       
       // Reload stats to update earnings
       await loadStats();
@@ -722,7 +722,7 @@ export default function AdminDashboard() {
   const backToProgress = async (taskId: number) => {
     try {
       // Since there's no specific endpoint for this, we'll update progress
-      await apiService.post(`/api/admin/tasks/${taskId}/update-progress/`, {
+      await apiService.post(`/admin/tasks/${taskId}/update-progress/`, {
         progress: 80
       })
     } catch (error) {
@@ -737,7 +737,7 @@ export default function AdminDashboard() {
     try {
       const newProgress = Math.min(selectedTask.progress + 20, 95)
       
-      await apiService.post(`/api/admin/tasks/${selectedTask.id}/update-progress/`, {
+      await apiService.post(`/admin/tasks/${selectedTask.id}/update-progress/`, {
         progress: newProgress,
         message: progressUpdate
       })
@@ -980,7 +980,7 @@ export default function AdminDashboard() {
     });
 
     await apiService.postFormData(
-      `/api/admin/tasks/${selectedTask.id}/upload-solution/`,
+      `/admin/tasks/${selectedTask.id}/upload-solution/`,
       formData
     );
 

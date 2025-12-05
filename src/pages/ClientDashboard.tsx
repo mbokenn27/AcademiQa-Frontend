@@ -169,9 +169,9 @@ export default function ClientDashboard() {
   const loadInitialData = async () => {
     try {
       setLoading(true)
-      const userData = await apiService.get<any>('/api/auth/user/')
+      const userData = await apiService.get<any>('/auth/user/')
       setCurrentUser(userData)
-      const tasksData = await apiService.get<any[]>('/api/tasks/')
+      const tasksData = await apiService.get<any[]>('/tasks/')
       setTasks(tasksData)
       if (tasksData.length > 0) setSelectedTask(tasksData[0])
       showToast("Dashboard Loaded", "Your dashboard has been loaded successfully")
@@ -185,7 +185,7 @@ export default function ClientDashboard() {
 
   const loadChatMessages = async (taskId: number) => {
     try {
-      const messages = await apiService.get<any[]>(`/api/tasks/${taskId}/chat/`)
+      const messages = await apiService.get<any[]>(`/tasks/${taskId}/chat/`)
       setChatMessages(messages)
       setTimeout(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, 100)
     } catch (error) {
@@ -226,9 +226,9 @@ export default function ClientDashboard() {
         const formData = new FormData()
         if (newMessage.trim()) formData.append('message', newMessage.trim())
         uploadedFiles.forEach(file => formData.append('file', file))
-        await apiService.postFormData(`/api/tasks/${selectedTask.id}/chat/`, formData)
+        await apiService.postFormData(`/tasks/${selectedTask.id}/chat/`, formData)
       } else {
-        await apiService.post(`/api/tasks/${selectedTask.id}/chat/`, { message: newMessage.trim() })
+        await apiService.post(`/tasks/${selectedTask.id}/chat/`, { message: newMessage.trim() })
       }
 
       setNewMessage('')
@@ -259,7 +259,7 @@ export default function ClientDashboard() {
       formData.append('proposed_budget', taskForm.budget)
       if (uploadedFiles.length > 0) uploadedFiles.forEach((file) => formData.append('file', file))
 
-      const newTask = await apiService.postFormData<any>('/api/tasks/', formData)
+      const newTask = await apiService.postFormData<any>('/tasks/', formData)
       setTasks(prev => [newTask, ...prev])
       setSelectedTask(newTask)
       setShowCreateTask(false)
@@ -277,7 +277,7 @@ export default function ClientDashboard() {
   const withdrawTask = async () => {
     if (!selectedTask) return
     try {
-      const result = await apiService.post<{task: any, message: string}>(`/api/tasks/${selectedTask.id}/withdraw/`, { reason: withdrawalReason })
+      const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/withdraw/`, { reason: withdrawalReason })
       setTasks(prev => prev.map(task => task.id === selectedTask.id ? { ...task, status: result.task.status, withdrawal_reason: result.task.withdrawal_reason } : task))
       setSelectedTask(prev => prev ? { ...prev, status: result.task.status, withdrawal_reason: result.task.withdrawal_reason } : null)
       setShowWithdrawModal(false)
@@ -293,7 +293,7 @@ export default function ClientDashboard() {
     if (!selectedTask) return
     try {
       if (action === 'accept') {
-        const result = await apiService.post<{task: any, message: string}>(`/api/tasks/${selectedTask.id}/accept-budget/`)
+        const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/accept-budget/`)
         setTasks(prev => prev.map(task => task.id === selectedTask.id ? {
           ...task, budget: result.task.budget, negotiation_status: result.task.negotiation_status, status: result.task.status, admin_counter_budget: undefined, negotiation_reason: undefined
         } : task))
@@ -305,7 +305,7 @@ export default function ClientDashboard() {
         if (!counterBudget?.trim()) { showToast("Error", "Please enter a counter budget amount.", "destructive"); return }
         const counterAmount = parseFloat(counterBudget)
         if (!Number.isFinite(counterAmount) || counterAmount <= 0) { showToast("Error", "Please enter a valid budget amount (greater than 0).", "destructive"); return }
-        const result = await apiService.post<{task: any, message: string}>(`/api/tasks/${selectedTask.id}/counter-budget/`, { amount: counterAmount })
+        const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/counter-budget/`, { amount: counterAmount })
         setTasks(prev => prev.map(task => task.id === selectedTask.id ? {
           ...task, proposed_budget: result.task.proposed_budget, negotiation_status: result.task.negotiation_status, status: result.task.status
         } : task))
@@ -314,7 +314,7 @@ export default function ClientDashboard() {
         setCounterBudget('')
         showToast("Success", result.message)
       } else if (action === 'reject') {
-        const result = await apiService.post<{task: any, message: string}>(`/api/tasks/${selectedTask.id}/reject-budget/`)
+        const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/reject-budget/`)
         setTasks(prev => prev.map(task => task.id === selectedTask.id ? {
           ...task, negotiation_status: result.task.negotiation_status, status: result.task.status
         } : task))
@@ -333,7 +333,7 @@ export default function ClientDashboard() {
     if (!window.confirm("Approve and complete this assignment?")) return
     try {
       setLoading(true)
-      const result = await apiService.post<{task: any, message: string}>(`/api/tasks/${selectedTask!.id}/approve/`)
+      const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask!.id}/approve/`)
       setTasks(prev => prev.map(task => task.id === selectedTask!.id ? { ...task, status: result.task.status } : task))
       setSelectedTask(prev => prev ? { ...prev, status: result.task.status } : null)
       showToast("Success", result.message)
@@ -474,7 +474,7 @@ export default function ClientDashboard() {
     if (!revisionFeedback?.trim()) { showToast("Required", "Add feedback", "destructive"); return }
     try {
       setLoading(true)
-      const result = await apiService.post<{task: any, message: string}>(`/api/tasks/${selectedTask!.id}/request-revision/`, { feedback: revisionFeedback.trim() })
+      const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask!.id}/request-revision/`, { feedback: revisionFeedback.trim() })
       setTasks(prev => prev.map(task => task.id === selectedTask!.id ? { ...task, status: result.task.status } : task))
       setSelectedTask(prev => prev ? { ...prev, status: result.task.status } : null)
       setShowRevisionModal(false)
