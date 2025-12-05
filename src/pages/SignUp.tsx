@@ -1,3 +1,4 @@
+// src/pages/SignUp.tsx
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useForm } from "react-hook-form";
@@ -7,9 +8,8 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 // === HTTP BASES ===
-const API_ROOT = (import.meta.env.VITE_API_BASE || 'http://localhost:8000').replace(/\/+$/, '');
+const API_ROOT = (import.meta.env.VITE_API_BASE || "http://localhost:8000").replace(/\/+$/, "");
 const API_BASE = /\/api\/?$/.test(API_ROOT) ? API_ROOT : `${API_ROOT}/api`;
-
 
 const signUpSchema = z
   .object({
@@ -47,9 +47,10 @@ export default function SignUp() {
     setIsSubmitting(true);
 
     try {
-      const response = await fetch(`${API_BASE}/auth/register/`, {
+      // NOTE: correct endpoint is /register/ (not /auth/register/)
+      const response = await fetch(`${API_BASE}/register/`, {
         method: "POST",
-        headers: { 
+        headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -61,27 +62,33 @@ export default function SignUp() {
         }),
       });
 
-      const result = await response.json();
+      // Safely parse JSON only if server returned JSON
+      const contentType = response.headers.get("content-type") || "";
+      let result: any = null;
+      try {
+        if (contentType.includes("application/json")) {
+          result = await response.json();
+        } else {
+          // consume text (e.g., HTML error page) to avoid JSON parse error
+          await response.text();
+        }
+      } catch {
+        // ignore parse issues (e.g., empty body on 201)
+      }
 
       if (response.ok) {
         setSuccess("Account created successfully! Redirecting to login...");
-        setTimeout(() => {
-          navigate("/login", { replace: true });
-        }, 2000);
+        setTimeout(() => navigate("/login", { replace: true }), 1500);
       } else {
-        if (result.username) {
-          setError(`Username: ${result.username[0]}`);
-        } else if (result.email) {
-          setError(`Email: ${result.email[0]}`);
-        } else if (result.password) {
-          setError(`Password: ${result.password[0]}`);
-        } else if (result.non_field_errors) {
-          setError(result.non_field_errors[0]);
-        } else {
-          setError(result.detail || "Registration failed. Please try again.");
-        }
+        const firstError =
+          result?.username?.[0] ||
+          result?.email?.[0] ||
+          result?.password?.[0] ||
+          result?.non_field_errors?.[0] ||
+          result?.detail ||
+          `Registration failed (${response.status}). Please try again.`;
+        setError(firstError);
       }
-      
     } catch (err: any) {
       console.error("Registration error:", err);
       setError("Network error. Please check your connection and try again.");
@@ -98,10 +105,8 @@ export default function SignUp() {
           "url('https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?auto=format&fit=crop&w=1920&q=80')",
       }}
     >
-
       {/* Dark Overlay + Centered Form */}
       <div className="flex-1 flex items-center justify-center bg-black bg-opacity-60 px-4 py-12">
-        
         {/* Smaller Form Card */}
         <div className="relative max-w-sm w-full bg-white bg-opacity-95 rounded-xl shadow-xl p-6 backdrop-blur-sm">
           <div className="text-center mb-6">
@@ -120,7 +125,6 @@ export default function SignUp() {
           )}
 
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
-
             {/* Name Fields */}
             <div className="grid grid-cols-2 gap-4">
               <div>
