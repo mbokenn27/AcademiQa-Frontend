@@ -36,7 +36,7 @@ const Toast = ({ title, description, variant }: { title: string; description: st
 // API service functions (normalized to avoid /api/api and localhost in prod)
 const apiService = {
   buildUrl(endpoint: string) {
-    const clean = (endpoint || "").replace(/^\/api\//i, "/") // WHY: tolerate callers passing '/api/...'
+    const clean = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
     return joinUrl(API_BASE, clean)
   },
   authHeaders(extra?: HeadersInit): HeadersInit {

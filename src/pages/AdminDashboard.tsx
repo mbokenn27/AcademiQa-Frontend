@@ -144,7 +144,7 @@ interface AdminStats {
 const apiService = {
   buildUrl(endpoint: string) {
     // tolerate callers passing "/api/..." – strip it because API_BASE already includes /api
-    const clean = (endpoint || "").replace(/^\/api\//i, "/");
+    const clean = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
     return joinUrl(API_BASE, clean);
   },
   authHeaders(extra?: HeadersInit): HeadersInit {
