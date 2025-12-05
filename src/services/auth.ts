@@ -1,6 +1,4 @@
 // src/services/auth.ts
-const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
-
 export interface LoginCredentials {
   username: string;
   password: string;
@@ -10,145 +8,153 @@ export interface SignUpData {
   username: string;
   email: string;
   password: string;
-  first_name: string;
-  last_name: string;
+  [k: string]: any;
 }
 
 export interface User {
   id: number;
   username: string;
-  email: string;
-  first_name: string;
-  last_name: string;
-  role: "client" | "admin";
-  phone?: string;
+  email?: string;
+  full_name?: string;
+  [k: string]: any;
 }
 
-class AuthService {
-  // -----------------------------
-  // LOGIN
-  // -----------------------------
-  async login(
-    credentials: LoginCredentials
-  ): Promise<{ user: User; access_token: string; refresh_token: string }> {
-    const response = await fetch(`${API_BASE_URL}/token/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(credentials),
-    });
+// ————————————————————————————————————————
+// Base + helpers
+// Expect VITE_API_BASE to be either
+//   https://host          OR
+//   https://host/api
+// We’ll safely ensure we hit /api/* exactly once.
+// ————————————————————————————————————————
+const RAW_BASE = (import.meta as any).env?.VITE_API_BASE || "";
+const BASE = String(RAW_BASE).replace(/\/+$/, ""); // trim trailing slash
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || "Login failed");
-    }
+function api(path: string) {
+  // ensure we end up with .../api/<path>
+  const p = path.startsWith("/api/") ? path : `/api${path.startsWith("/") ? path : `/${path}`}`;
+  return `${BASE}${p}`;
+}
 
-    const data = await response.json();
+function authHeader() {
+  const token = localStorage.getItem("access_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
-    const access = data.access;
-    const refresh = data.refresh;
+async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  const ct = res.headers.get("content-type") || "";
+  const body = ct.includes("application/json") ? await res.json() : await res.text();
+
+  if (!res.ok) {
+    const detail = (body as any)?.detail || (body as any)?.error || res.statusText;
+    throw new Error(typeof detail === "string" ? detail : `Request failed: ${res.status}`);
+  }
+  return body as T;
+}
+
+// ————————————————————————————————————————
+// Auth service
+// ————————————————————————————————————————
+export const authService = {
+  // POST /api/token/ -> { access, refresh } (DRF SimpleJWT)
+  // then GET /api/auth/user/
+  async login(credentials: LoginCredentials): Promise<{
+    user: User;
+    access_token: string;
+    refresh_token: string;
+  }> {
+    const tokenResp = await jsonFetch<{ access?: string; refresh?: string; access_token?: string; refresh_token?: string }>(
+      api("/token/"),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(credentials),
+      }
+    );
+
+    const access = tokenResp.access || tokenResp.access_token;
+    const refresh = tokenResp.refresh || tokenResp.refresh_token;
+
+    if (!access) throw new Error("Login failed: no access token returned");
 
     localStorage.setItem("access_token", access);
     if (refresh) localStorage.setItem("refresh_token", refresh);
 
-    const user = await this.getCurrentUser();
-
-    return { user, access_token: access, refresh_token: refresh };
-  }
-
-  // -----------------------------
-  // SIGNUP (reuses login)
-  // -----------------------------
-  async signup(
-    userData: SignUpData
-  ): Promise<{ user: User; access_token: string; refresh_token: string }> {
-    const res = await fetch(`${API_BASE_URL}/register/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(userData),
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(
-        err.username?.[0] ||
-          err.email?.[0] ||
-          err.password?.[0] ||
-          err.detail ||
-          "Registration failed"
-      );
+    // Try to read user info
+    let user: User;
+    try {
+      user = await jsonFetch<User>(api("/auth/user/"), { headers: authHeader() });
+    } catch {
+      // If your backend returned user in login response, fall back to that
+      user = (tokenResp as any).user as User;
+      if (!user) throw new Error("Login succeeded but user info not available");
     }
 
-    return this.login({
-      username: userData.username,
-      password: userData.password,
-    });
-  }
+    return { user, access_token: access, refresh_token: refresh || "" };
+  },
 
-  // -----------------------------
-  // GET CURRENT USER
-  // -----------------------------
-  async getCurrentUser(): Promise<User> {
-    const token = localStorage.getItem("access_token");
-    if (!token) throw new Error("No authentication token");
-
-    const response = await fetch(`${API_BASE_URL}/auth/user/`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (!response.ok) {
-      if (response.status === 401) {
-        this.logout();
+  // POST /api/token/refresh/ -> { access }
+  async refreshToken(refreshToken: string): Promise<{ access_token: string; refresh_token?: string }> {
+    const resp = await jsonFetch<{ access?: string; refresh?: string; access_token?: string; refresh_token?: string }>(
+      api("/token/refresh/"),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh: refreshToken }),
       }
-      throw new Error("Failed to fetch current user");
-    }
+    );
 
-    const user = await response.json();
-    localStorage.setItem("user", JSON.stringify(user));
-    return user;
-  }
+    const access = resp.access || resp.access_token;
+    const refresh = resp.refresh || resp.refresh_token;
 
-  // -----------------------------
-  // REFRESH TOKEN
-  // -----------------------------
-  async refreshToken(refreshToken: string): Promise<{
+    if (!access) throw new Error("Refresh failed: no access token returned");
+
+    return { access_token: access, ...(refresh ? { refresh_token: refresh } : {}) };
+  },
+
+  // GET /api/auth/user/
+  async getCurrentUser(): Promise<User> {
+    return jsonFetch<User>(api("/auth/user/"), { headers: authHeader() });
+  },
+
+  // If you have sign-up, adjust the endpoint if your backend differs
+  // Common choices: /api/auth/signup/ or /api/auth/register/
+  async signup(data: SignUpData): Promise<{
+    user: User;
     access_token: string;
-    refresh_token?: string;
+    refresh_token: string;
   }> {
-    const response = await fetch(`${API_BASE_URL}/token/refresh/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh: refreshToken }),
-    });
+    // Try /signup/ first; fallback to /register/
+    let resp:
+      | { user?: User; access?: string; refresh?: string; access_token?: string; refresh_token?: string }
+      | undefined;
 
-    if (!response.ok) {
-      throw new Error("Token refresh failed");
+    try {
+      resp = await jsonFetch(api("/auth/signup/"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+    } catch {
+      resp = await jsonFetch(api("/auth/register/"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
     }
 
-    const data = await response.json();
+    const access = (resp as any).access || (resp as any).access_token;
+    const refresh = (resp as any).refresh || (resp as any).refresh_token;
+    const user = (resp as any).user as User;
 
-    return {
-      access_token: data.access,
-      refresh_token: data.refresh, // some backends don't return it → optional
-    };
-  }
+    if (!access || !user) throw new Error("Signup failed");
 
-  // -----------------------------
-  // UTILITIES
-  // -----------------------------
-  getToken() {
-    return localStorage.getItem("access_token");
-  }
-
-  isAuthenticated() {
-    return !!this.getToken();
-  }
+    return { user, access_token: access, refresh_token: refresh || "" };
+  },
 
   logout() {
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("refresh_token");
-    localStorage.removeItem("user");
-    localStorage.removeItem("role");
-  }
-}
-
-export const authService = new AuthService();
+    // If you have a server-side logout, call it here. Otherwise local only.
+    // await fetch(api('/auth/logout/'), { method: 'POST', headers: authHeader() }).catch(() => {});
+    return;
+  },
+};

@@ -1,4 +1,4 @@
-// src/pages/Login.tsx   ←  FINAL WORKING VERSION
+// src/pages/Login.tsx   ← ENV-BASED + ROLE ROUTING AFTER LOGIN
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useForm } from "react-hook-form";
@@ -8,13 +8,20 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { Loader2 } from "lucide-react";
+import { authService } from "@/services/auth"; // we'll use this to fetch current user after login
 
 const loginSchema = z.object({
   username: z.string().min(1, "Username is required"),
   password: z.string().min(1, "Password is required"),
 });
-
 type LoginForm = z.infer<typeof loginSchema>;
+
+// Small helper to build API URLs like https://host[/api]/auth/...
+const API = (path: string) => {
+  const base = (import.meta as any).env?.VITE_API_BASE?.replace(/\/+$/, "") || "";
+  const p = path.startsWith("/api/") ? path : `/api${path.startsWith("/") ? path : `/${path}`}`;
+  return `${base}${p}`;
+};
 
 export default function Login() {
   const [error, setError] = useState("");
@@ -32,21 +39,25 @@ export default function Login() {
     register,
     handleSubmit,
     formState: { errors, isSubmitting },
-  } = useForm<LoginForm>({
-    resolver: zodResolver(loginSchema),
-  });
+  } = useForm<LoginForm>({ resolver: zodResolver(loginSchema) });
 
   const onSubmit = async (data: LoginForm) => {
     setError("");
     try {
-      const loggedInUser = await login(data);
-      if (loggedInUser.role === "admin") {
-        navigate("/admin", { replace: true });
-      } else {
-        navigate("/client", { replace: true });
-      }
+      // AuthContext.login stores tokens + user in storage/state, but doesn't return it.
+      await login(data);
+
+      // Get fresh user explicitly and route by role
+      const me = await authService.getCurrentUser();
+      const role =
+        (me as any)?.role ||
+        (me as any)?.profile?.role ||
+        (me as any)?.profile_role;
+
+      if (role === "admin") navigate("/admin", { replace: true });
+      else navigate("/client", { replace: true });
     } catch (err: any) {
-      setError(err.message || "Invalid username or password");
+      setError(err?.message || "Invalid username or password");
     }
   };
 
@@ -54,17 +65,17 @@ export default function Login() {
     if (!email.includes("@")) return setError("Enter a valid email");
     setLoading(true); setError(""); setMessage("");
     try {
-      const res = await fetch("http://localhost:8000/api/auth/password-reset/", {
+      const res = await fetch(API("/auth/password-reset/"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        setMessage("Check your email for the 6-digit code");
+        setMessage(data?.detail || "Check your email for the 6-digit code");
         setStep("code");
       } else {
-        setError(data.error || "Failed to send code");
+        setError(data?.error || data?.detail || "Failed to send code");
       }
     } catch {
       setError("Network error");
@@ -77,14 +88,14 @@ export default function Login() {
     if (code.length !== 6) return setError("Enter full 6-digit code");
     setLoading(true); setError("");
     try {
-      const res = await fetch("http://localhost:8000/api/auth/password-reset-confirm/", {
+      const res = await fetch(API("/auth/password-reset-confirm/"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, code }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok) setStep("newpassword");
-      else setError(data.error || "Invalid code");
+      else setError(data?.error || data?.detail || "Invalid code");
     } catch {
       setError("Network error");
     } finally {
@@ -96,18 +107,18 @@ export default function Login() {
     if (newPassword.length < 6) return setError("Password too short");
     setLoading(true); setError("");
     try {
-      const res = await fetch("http://localhost:8000/api/auth/password-reset-complete/", {
+      const res = await fetch(API("/auth/password-reset-complete/"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, code, new_password: newPassword }),
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setMessage("Password changed! You can now log in.");
         setStep("login");
         setEmail(""); setCode(""); setNewPassword("");
       } else {
-        const data = await res.json();
-        setError(data.error || "Failed");
+        setError(data?.error || data?.detail || "Failed");
       }
     } catch {
       setError("Network error");
@@ -126,8 +137,6 @@ export default function Login() {
     >
       <div className="flex-1 flex items-center justify-center bg-black bg-opacity-60 px-4 py-12">
         <div className="relative max-w-sm w-full bg-white bg-opacity-95 rounded-xl shadow-xl p-6 backdrop-blur-sm">
-
-          {/* ====================== LOGIN ====================== */}
           {step === "login" && (
             <>
               <div className="text-center mb-6">
@@ -182,7 +191,6 @@ export default function Login() {
             </>
           )}
 
-          {/* ====================== STEP 1: Enter Email ====================== */}
           {step === "email" && (
             <>
               <h2 className="text-2xl font-bold text-center mb-6">Reset Password</h2>
@@ -210,7 +218,6 @@ export default function Login() {
             </>
           )}
 
-          {/* ====================== STEP 2: Enter Code ====================== */}
           {step === "code" && (
             <>
               <h2 className="text-2xl font-bold text-center mb-6">Enter Code</h2>
@@ -237,7 +244,6 @@ export default function Login() {
             </>
           )}
 
-          {/* ====================== STEP 3: New Password ====================== */}
           {step === "newpassword" && (
             <>
               <h2 className="text-2xl font-bold text-center mb-6">Set New Password</h2>
