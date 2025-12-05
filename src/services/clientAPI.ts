@@ -1,94 +1,67 @@
-// path: src/services/clientAPI.ts
-
 /**
- * REST + WS client helpers.
- * Uses Vite env:
- *  - VITE_API_URL: e.g. '/api' or 'https://api.example.com/api'
- *  - VITE_WS_URL : e.g. 'wss://api.example.com/ws' (optional; auto if absent)
+ * REST + WS client helpers (Vite).
+ * - VITE_API_URL: '/api' or 'https://api.example.com/api'
+ * - VITE_WS_URL : 'wss://example.com/ws' (optional; /client/ added automatically)
  */
-
-// ------------------------ REST base resolution -------------------------------
 
 function resolveApiBase(): string {
   const raw =
     (typeof import.meta !== "undefined" &&
       (import.meta as any).env?.VITE_API_URL) ||
     (process.env.REACT_APP_API_URL as string) ||
-    ""; // CRA fallback if you ever need it
+    "";
 
   if (!raw) return "/api";
-
   const noTrail = raw.trim().replace(/\/+$/, "");
-
-  // If absolute host with no path, append '/api'
+  // Absolute host with no path → append '/api'
   if (/^https?:\/\/[^/]+$/i.test(noTrail)) return `${noTrail}/api`;
-
-  // If it's a path or already has '/api', leave as-is
-  return noTrail;
+  return noTrail; // already '/api' or has a path
 }
 
-// Join base + path safely; strip leading '/api/' from path to avoid duplicates.
+// Join base + path safely; strip '/api/' from path to avoid '/api/api/...'
 function joinUrl(base: string, path: string): string {
   const b = base.replace(/\/+$/, "");
   const p0 = path.startsWith("/") ? path : `/${path}`;
-  const p = p0.replace(/^\/api\/(.*)$/i, "/$1"); // guard against '/api/api/...'
+  const p = p0.replace(/^\/api\/(.*)$/i, "/$1");
   return `${b}${p}`;
 }
 
 const API_BASE = resolveApiBase();
 
-// ------------------------ WebSocket URL resolution ---------------------------
-
+// ------------- WS URL -------------
 export function resolveWsUrl(): string {
   const fromEnv =
     (typeof import.meta !== "undefined" &&
       (import.meta as any).env?.VITE_WS_URL) ||
     "";
-
   const normalized = fromEnv.trim().replace(/\/+$/, "");
-
-  if (normalized) return `${normalized}/client/`; // env provided, ensure trailing '/client/'
-
-  // Auto-compute from current page
+  if (normalized) return `${normalized}/client/`;
   if (typeof window !== "undefined") {
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    const host = window.location.host;
-    return `${proto}://${host}/ws/client/`;
+    return `${proto}://${window.location.host}/ws/client/`;
   }
-
-  // Server-side render fallback
   return "ws://localhost:8000/ws/client/";
 }
-
-// ------------------------ REST helpers ---------------------------------------
 
 const authHeaders = () => ({
   Authorization: localStorage.getItem("access_token")
     ? `Bearer ${localStorage.getItem("access_token")}`
-    : "", // avoid 'Bearer null'
+    : "",
   "Content-Type": "application/json",
 });
 
 async function handle(res: Response) {
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Request failed (${res.status})`);
-  }
+  if (!res.ok) throw new Error((await res.text()) || `Request failed (${res.status})`);
   const ct = res.headers.get("content-type") || "";
   if (!ct.includes("application/json")) return null as unknown as any;
   return res.json();
 }
 
-// ------------------------ Public REST API ------------------------------------
-
 export const clientAPI = {
-  // Current user
   getCurrentUser: () =>
     fetch(joinUrl(API_BASE, "/auth/user/"), { headers: authHeaders() }).then(handle),
 
-  // Client tasks
-  getTasks: () =>
-    fetch(joinUrl(API_BASE, "/tasks/"), { headers: authHeaders() }).then(handle),
+  getTasks: () => fetch(joinUrl(API_BASE, "/tasks/"), { headers: authHeaders() }).then(handle),
 
   getTask: (id: string | number) =>
     fetch(joinUrl(API_BASE, `/tasks/${id}/`), { headers: authHeaders() }).then(handle),
@@ -107,7 +80,6 @@ export const clientAPI = {
       body: JSON.stringify(data),
     }).then(handle),
 
-  // Budget negotiation (client)
   acceptBudget: (id: string | number) =>
     fetch(joinUrl(API_BASE, `/tasks/${id}/accept-budget/`), {
       method: "POST",
@@ -147,7 +119,6 @@ export const clientAPI = {
       body: JSON.stringify({ feedback }),
     }).then(handle),
 
-  // Chat
   getMessages: (taskId: string | number) =>
     fetch(joinUrl(API_BASE, `/tasks/${taskId}/chat/`), { headers: authHeaders() }).then(handle),
 
@@ -158,7 +129,6 @@ export const clientAPI = {
       body: JSON.stringify(messageData),
     }).then(handle),
 
-  // Notifications
   getNotifications: () =>
     fetch(joinUrl(API_BASE, "/notifications/"), { headers: authHeaders() }).then(handle),
 
@@ -169,17 +139,9 @@ export const clientAPI = {
     }).then(handle),
 };
 
-export default clientAPI;
-
-// ------------------------ Optional WS helper ---------------------------------
-
-/**
- * getWebSocket: returns a connected WebSocket instance.
- * WHY: Centralizes URL building & keeps a single source of truth.
- */
 export function getWebSocket(tokenParamKey = "token"): WebSocket {
   const url = new URL(resolveWsUrl());
   const access = localStorage.getItem("access_token");
-  if (access) url.searchParams.set(tokenParamKey, access); // pass JWT via query param
+  if (access) url.searchParams.set(tokenParamKey, access); // if your backend expects JWT in query
   return new WebSocket(url.toString());
 }
