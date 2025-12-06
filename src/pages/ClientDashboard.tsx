@@ -569,7 +569,7 @@ const createTask = async (e: React.FormEvent) => {
           return;
         }
        
-        const result = await apiService.post<{task: any, message: string}>(`//tasks/${selectedTask.id}/counter-budget/`, {
+        const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/counter-budget/`, {
           amount: counterAmount
         });
        
@@ -701,37 +701,45 @@ const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
   const removeFile = (index: number) => {
     setUploadedFiles(prev => prev.filter((_, i) => i !== index))
   }
-  const downloadFile = async (file: any) => {
-    try {
-      if (file.file_url) {
-        window.open(file.file_url, '_blank');
-      } else {
-        const token = localStorage.getItem('access_token');
-        const response = await fetch(`${API_BASE}/files/${file.id}/download/`, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
-        });
-       
-        if (!response.ok) {
-          throw new Error('Download failed');
-        }
-       
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = file.name || 'download';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        window.URL.revokeObjectURL(url);
-      }
-    } catch (error) {
-      console.error('Failed to download file:', error);
-      showToast("Error", "Failed to download file. Please try again.", "destructive");
+
+  const makeAbsoluteFileUrl = (u: string) => {
+    if (!u) return u;
+    if (/^https?:\/\//i.test(u)) return u;                     // already absolute
+    const path = u.startsWith('/') ? u : `/${u}`;              // normalize
+    return `${API_ROOT}${path}`;                               // API_ROOT already defined
+  };
+
+const downloadFile = async (file: { id: number; name?: string; file_url?: string }) => {
+  try {
+    if (file.file_url) {
+      // Handle absolute and relative URLs uniformly
+      const href = makeAbsoluteFileUrl(file.file_url);
+      window.open(href, '_blank');
+      return;
     }
+
+    // Fallback to API download route (keeps Authorization header)
+    const token = localStorage.getItem('access_token');
+    const res = await fetch(`${API_BASE}/files/${file.id}/download/`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error('Download failed');
+
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = file.name || 'download';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  } catch (error) {
+    console.error('Failed to download file:', error);
+    showToast("Error", "Failed to download file. Please try again.", "destructive");
   }
+};
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'submitted': return 'bg-amber-100 text-amber-800 border-amber-200'
@@ -812,7 +820,7 @@ const requestRevision = async () => {
   }
   try {
     setLoading(true);
-    const result = await apiService.post<{task: any, message: string}>(`/api/tasks/${selectedTask!.id}/request-revision/`, {
+    const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask!.id}/request-revision/`, {
       feedback: revisionFeedback.trim()
     });
     
@@ -1450,8 +1458,10 @@ const requestRevision = async () => {
                                         }`}
                                       >
                                         <a
-                                          href={message.file_url}
+                                          href={makeAbsoluteFileUrl(message.file_url)}
                                           download
+                                          target="_blank"
+                                          rel="noopener"
                                           className="flex items-center gap-1 hover:underline"
                                         >
                                           <i className="ri-attachment-line"></i>
