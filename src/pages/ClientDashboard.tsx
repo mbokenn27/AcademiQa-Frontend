@@ -16,11 +16,10 @@ const useToast = () => {
     toast: showToast
   }
 }
-// Toast Component
+
 // Toast Component
 const Toast = ({ title, description, variant }: { title: string; description: string; variant?: string }) => {
   const bgColor = variant === 'destructive' ? 'bg-red-500' : 'bg-green-500'
- 
   return (
     <div
       className={`
@@ -37,8 +36,7 @@ const Toast = ({ title, description, variant }: { title: string; description: st
   )
 }
 
-
-//WebSocket Hook with JWT Token Authentication
+// WebSocket Hook with JWT Token Authentication
 const useWebSocketWithReconnect = (url: string | null, onMessage: (data: any) => void, deps: any[] = []) => {
   const [ws, setWs] = useState<WebSocket | null>(null);
 
@@ -67,7 +65,6 @@ const useWebSocketWithReconnect = (url: string | null, onMessage: (data: any) =>
       const path = url.startsWith('/') ? url : `/${url}`;
       const wsUrl = `${base}${path}?token=${encodeURIComponent(token)}`;
       console.log("[WS] connecting →", wsUrl);
-
 
       const websocket = new WebSocket(wsUrl);
 
@@ -116,7 +113,6 @@ const useWebSocketWithReconnect = (url: string | null, onMessage: (data: any) =>
   return { sendMessage };
 };
 
-// API service functions
 // === HTTP BASES (put this just above apiService) ===
 const API_ROOT = (import.meta.env.VITE_API_BASE || 'http://localhost:8000').replace(/\/+$/, '');
 const API_BASE = /\/api\/?$/.test(API_ROOT) ? API_ROOT : `${API_ROOT}/api`;
@@ -164,7 +160,6 @@ const apiService = {
   },
 };
 
-
 // Timezone options
 const timezones = [
   { value: 'America/New_York', label: 'Eastern Time (ET)' },
@@ -176,8 +171,9 @@ const timezones = [
   { value: 'Asia/Tokyo', label: 'Japan Standard Time (JST)' },
   { value: 'Asia/Shanghai', label: 'China Standard Time (CST)' },
   { value: 'Asia/Kolkata', label: 'India Standard Time (IST)' },
-  { value: 'Australia/Sydney', label: 'Australian Eastern Time (AET)' }
+  { value: 'Australia/Sydney', label: 'Australian Eastern Time (AET)'}
 ]
+
 export default function ClientDashboard() {
   const navigate = useNavigate()
   const { logout, user } = useAuth()
@@ -203,6 +199,7 @@ export default function ClientDashboard() {
   const chatEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const typingTimeoutRef = useRef<NodeJS.Timeout>()
+
   // Create task form state
   const [taskForm, setTaskForm] = useState({
     title: '',
@@ -213,27 +210,29 @@ export default function ClientDashboard() {
     timezone: 'America/New_York',
     budget: ''
   })
+
   // Custom toast function
   const showToast = (title: string, description: string, variant?: string) => {
     setCurrentToast({ title, description, variant })
     setTimeout(() => setCurrentToast(null), 3000)
   }
+
   // WebSocket for client dashboard updates
   const { sendMessage: sendClientMessage } = useWebSocketWithReconnect('/ws/client/', (data) => {
     console.log('Client WebSocket message:', data);
-   
+
     if (data.type === 'task_updated' && data.task) {
       setTasks(prev => prev.map(task =>
         task.id === data.task.id ? { ...task, ...data.task } : task
       ));
-     
+
       if (selectedTask && selectedTask.id === data.task.id) {
         setSelectedTask(prev => ({ ...prev, ...data.task }));
       }
-     
+
       showToast("Task Updated", "Task has been updated in real-time");
     }
-   
+
     if (data.type === 'task_created' && data.task) {
       setTasks(prev => [data.task, ...prev]);
       showToast("New Task", "New task has been created successfully");
@@ -245,7 +244,7 @@ export default function ClientDashboard() {
     selectedTask ? `/ws/task/${selectedTask.id}/` : null,
     (data) => {
       console.log('Task WebSocket message:', data);
-      
+
       if (data.type === 'chat_message' && data.message) {
         setChatMessages(prev => {
           // Already have this exact saved message?
@@ -278,16 +277,12 @@ export default function ClientDashboard() {
         }, 100);
       }
 
-
-     
       if (data.type === 'user_typing') {
-        // Handle typing indicators
         if (data.username !== currentUser?.username) {
           setIsTyping(data.is_typing);
         }
       }
-     
-      // Handle task updates from other users
+
       if (data.type === 'task_updated' && data.task) {
         setTasks(prev => prev.map(task =>
           task.id === data.task.id ? { ...task, ...data.task } : task
@@ -299,26 +294,31 @@ export default function ClientDashboard() {
     },
     [selectedTask?.id]
   );
+
   // Load initial data
   useEffect(() => {
     loadInitialData()
   }, [])
+
   // Load chat messages when selected task changes
   useEffect(() => {
     if (selectedTask) {
       loadChatMessages(selectedTask.id);
     }
   }, [selectedTask?.id])
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chatMessages])
+
   const loadInitialData = async () => {
     try {
       setLoading(true)
-     
+
       // Load current user
       const userData = await apiService.get<any>('/auth/user/')
       setCurrentUser(userData)
+
       // Load tasks
       const tasksData = await apiService.get<any[]>('/tasks/')
       setTasks(tasksData)
@@ -333,11 +333,12 @@ export default function ClientDashboard() {
       setLoading(false)
     }
   }
+
   const loadChatMessages = async (taskId: number) => {
     try {
       const messages = await apiService.get<any[]>(`/tasks/${taskId}/chat/`)
       setChatMessages(messages)
-     
+
       setTimeout(() => {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
@@ -346,6 +347,7 @@ export default function ClientDashboard() {
       showToast("Error", "Failed to load chat messages", "destructive")
     }
   }
+
   const handleTyping = (typing: boolean) => {
     if (selectedTask && sendTaskMessage) {
       sendTaskMessage({
@@ -354,91 +356,93 @@ export default function ClientDashboard() {
       });
     }
   };
+
   const handleMessageInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setNewMessage(e.target.value);
-   
+
     // Handle typing indicators
     if (!isTyping) {
       setIsTyping(true);
       handleTyping(true);
     }
-   
+
     // Clear existing timeout
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
     }
-   
+
     // Set timeout to stop typing indicator
     typingTimeoutRef.current = setTimeout(() => {
       setIsTyping(false);
       handleTyping(false);
     }, 1000);
   };
-const handleKeyPress = (e: React.KeyboardEvent) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault()
-    if (newMessage.trim()) {
-      sendMessage()
+
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      if (newMessage.trim()) {
+        sendMessage()
+      }
     }
   }
-}
 
-const sendMessage = async () => {
-  if (!newMessage.trim() && uploadedFiles.length === 0) return;
-  if (!selectedTask) return;
+  const sendMessage = async () => {
+    if (!newMessage.trim() && uploadedFiles.length === 0) return;
+    if (!selectedTask) return;
 
-  let optimisticId: number | null = null;
+    let optimisticId: number | null = null;
 
-  try {
-    // stop typing indicator
-    setIsTyping(false);
-    handleTyping(false);
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    try {
+      // stop typing indicator
+      setIsTyping(false);
+      handleTyping(false);
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
 
-    // 1) add an optimistic bubble immediately
-    const optimisticMessage = {
-      id: Date.now(),                                // temp id
-      message: newMessage.trim(),
-      sender: currentUser?.username || 'You',
-      sender_role: 'client',
-      created_at: new Date().toISOString(),
-      is_read: false,
-      ...(uploadedFiles.length > 0
-        ? { file_url: 'pending', file_name: uploadedFiles[0]?.name }
-        : {}),
-    };
-    optimisticId = optimisticMessage.id;
-    setChatMessages(prev => [...prev, optimisticMessage]);
-    setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
-
-    // 2) POST and capture the *saved* message from the API
-    let saved: any;
-    if (uploadedFiles.length > 0) {
-      const formData = new FormData();
-      if (newMessage.trim()) formData.append('message', newMessage.trim());
-      uploadedFiles.forEach(file => formData.append('file', file));
-      saved = await apiService.postFormData<any>(`/tasks/${selectedTask.id}/chat/`, formData);
-    } else {
-      saved = await apiService.post<any>(`/tasks/${selectedTask.id}/chat/`, {
+      // 1) add an optimistic bubble immediately
+      const optimisticMessage = {
+        id: Date.now(),                                // temp id
         message: newMessage.trim(),
-      });
-    }
+        sender: currentUser?.username || 'You',
+        sender_role: 'client',
+        created_at: new Date().toISOString(),
+        is_read: false,
+        ...(uploadedFiles.length > 0
+          ? { file_url: 'pending', file_name: uploadedFiles[0]?.name }
+          : {}),
+      };
+      optimisticId = optimisticMessage.id;
+      setChatMessages(prev => [...prev, optimisticMessage]);
+      setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
 
-    // 3) replace the optimistic bubble with the real one
-    setChatMessages(prev => prev.map(m => (m.id === optimisticId ? saved : m)));
+      // 2) POST and capture the *saved* message from the API
+      let saved: any;
+      if (uploadedFiles.length > 0) {
+        const formData = new FormData();
+        if (newMessage.trim()) formData.append('message', newMessage.trim());
+        uploadedFiles.forEach(file => formData.append('file', file));
+        saved = await apiService.postFormData<any>(`/tasks/${selectedTask.id}/chat/`, formData);
+      } else {
+        saved = await apiService.post<any>(`/tasks/${selectedTask.id}/chat/`, {
+          message: newMessage.trim(),
+        });
+      }
 
-    // 4) clear inputs
-    setNewMessage('');
-    setUploadedFiles([]);
-  } catch (error: any) {
-    // rollback optimistic on error
-    if (optimisticId !== null) {
-      setChatMessages(prev => prev.filter(m => m.id !== optimisticId));
+      // 3) replace the optimistic bubble with the real one
+      setChatMessages(prev => prev.map(m => (m.id === optimisticId ? saved : m)));
+
+      // 4) clear inputs
+      setNewMessage('');
+      setUploadedFiles([]);
+    } catch (error: any) {
+      // rollback optimistic on error
+      if (optimisticId !== null) {
+        setChatMessages(prev => prev.filter(m => m.id !== optimisticId));
+      }
+      console.error('Failed to send message:', error);
+      showToast("Error", "Failed to send message: " + error.message, "destructive");
     }
-    console.error('Failed to send message:', error);
-    showToast("Error", "Failed to send message: " + error.message, "destructive");
-  }
-};
+  };
 
   const refreshChat = () => {
     if (selectedTask) {
@@ -447,88 +451,86 @@ const sendMessage = async () => {
     }
   };
 
-const createTask = async (e: React.FormEvent) => {
-  e.preventDefault();
+  const createTask = async (e: React.FormEvent) => {
+    e.preventDefault();
 
-  // 1) Optimistic toast right away (no waiting)
-  showToast("Submitting…", "We're creating your assignment now.");
+    // 1) Optimistic toast right away (no waiting)
+    showToast("Submitting…", "We're creating your assignment now.");
 
-  // 2) Build the request payload
-  const formData = new FormData();
-  formData.append('title', taskForm.title);
-  formData.append('description', taskForm.description);
-  formData.append('subject', taskForm.subject);
-  formData.append('education_level', taskForm.education_level);
-  formData.append('deadline', taskForm.deadline);
-  formData.append('timezone_str', taskForm.timezone);
-  formData.append('proposed_budget', taskForm.budget);
-  uploadedFiles.forEach((file) => formData.append('file', file));
+    // 2) Build the request payload
+    const formData = new FormData();
+    formData.append('title', taskForm.title);
+    formData.append('description', taskForm.description);
+    formData.append('subject', taskForm.subject);
+    formData.append('education_level', taskForm.education_level);
+    formData.append('deadline', taskForm.deadline);
+    formData.append('timezone_str', taskForm.timezone);
+    formData.append('proposed_budget', taskForm.budget);
+    uploadedFiles.forEach((file) => formData.append('file', file));
 
-  // 3) Optimistically add a temp task so UI feels instant
-  const tempId = Date.now();
-  const optimisticTask = {
-    id: tempId,
-    title: taskForm.title,
-    description: taskForm.description,
-    subject: taskForm.subject,
-    education_level: taskForm.education_level,
-    deadline: taskForm.deadline,
-    timezone_str: taskForm.timezone,
-    proposed_budget: taskForm.budget,
-    status: 'submitted',
-    negotiation_status: 'pending_admin_review',
-    files: [],
-    revisions: [],
-    chat: [],
+    // 3) Optimistically add a temp task so UI feels instant
+    const tempId = Date.now();
+    const optimisticTask = {
+      id: tempId,
+      title: taskForm.title,
+      description: taskForm.description,
+      subject: taskForm.subject,
+      education_level: taskForm.education_level,
+      deadline: taskForm.deadline,
+      timezone_str: taskForm.timezone,
+      proposed_budget: taskForm.budget,
+      status: 'submitted',
+      negotiation_status: 'pending_admin_review',
+      files: [],
+      revisions: [],
+      chat: [],
+    };
+
+    setTasks(prev => [optimisticTask, ...prev]);
+    setSelectedTask(optimisticTask);
+    setShowCreateTask(false); // close immediately for snappy UX
+
+    try {
+      const newTask = await apiService.postFormData<any>('/tasks/', formData);
+
+      // 4) Reconcile optimistic task with the real one
+      setTasks(prev => prev.map(t => (t.id === tempId ? newTask : t)));
+      setSelectedTask(newTask);
+
+      // Success toast
+      showToast("Success", "Task submitted successfully!");
+    } catch (error: any) {
+      // Rollback optimistic task on error
+      setTasks(prev => prev.filter(t => t.id !== tempId));
+      if (selectedTask?.id === tempId) setSelectedTask(null);
+
+      showToast("Error", "Failed: " + (error.message || "Please try again"), "destructive");
+
+      // Reopen the modal so user can retry / edit
+      setShowCreateTask(true);
+    } finally {
+      // Reset form regardless
+      setTaskForm({
+        title: '',
+        description: '',
+        subject: '',
+        education_level: '',
+        deadline: '',
+        timezone: 'America/New_York',
+        budget: ''
+      });
+      setUploadedFiles([]);
+    }
   };
-
-  setTasks(prev => [optimisticTask, ...prev]);
-  setSelectedTask(optimisticTask);
-  setShowCreateTask(false); // close immediately for snappy UX
-
-  try {
-    const newTask = await apiService.postFormData<any>('/tasks/', formData);
-
-    // 4) Reconcile optimistic task with the real one
-    setTasks(prev => prev.map(t => (t.id === tempId ? newTask : t)));
-    setSelectedTask(newTask);
-
-    // Success toast
-    showToast("Success", "Task submitted successfully!");
-  } catch (error: any) {
-    // Rollback optimistic task on error
-    setTasks(prev => prev.filter(t => t.id !== tempId));
-    if (selectedTask?.id === tempId) setSelectedTask(null);
-
-    showToast("Error", "Failed: " + (error.message || "Please try again"), "destructive");
-
-    // Reopen the modal so user can retry / edit
-    setShowCreateTask(true);
-  } finally {
-    // Reset form regardless
-    setTaskForm({
-      title: '',
-      description: '',
-      subject: '',
-      education_level: '',
-      deadline: '',
-      timezone: 'America/New_York',
-      budget: ''
-    });
-    setUploadedFiles([]);
-  }
-};
-
-
 
   const withdrawTask = async () => {
     if (!selectedTask) return
-   
+
     try {
       const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/withdraw/`, {
         reason: withdrawalReason
       });
-     
+
       setTasks(prev => prev.map(task =>
         task.id === selectedTask.id
           ? {
@@ -538,18 +540,18 @@ const createTask = async (e: React.FormEvent) => {
             }
           : task
       ))
-     
+
       setSelectedTask(prev => prev ? {
         ...prev,
         status: result.task.status,
         withdrawal_reason: result.task.withdrawal_reason
       } : null)
-     
+
       setShowWithdrawModal(false)
       setWithdrawalReason('')
-     
+
       showToast("Success", result.message)
-     
+
     } catch (error: any) {
       console.error('Failed to withdraw task:', error)
       showToast("Error", "Failed to withdraw task: " + error.message, "destructive")
@@ -558,11 +560,11 @@ const createTask = async (e: React.FormEvent) => {
 
   const respondToBudgetNegotiation = async (action: 'accept' | 'counter' | 'reject') => {
     if (!selectedTask) return
-   
+
     try {
       if (action === 'accept') {
         const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/accept-budget/`);
-       
+
         setTasks(prev => prev.map(task =>
           task.id === selectedTask.id
             ? {
@@ -575,7 +577,7 @@ const createTask = async (e: React.FormEvent) => {
               }
             : task
         ))
-       
+
         setSelectedTask(prev => prev ? {
           ...prev,
           budget: result.task.budget,
@@ -584,27 +586,27 @@ const createTask = async (e: React.FormEvent) => {
           admin_counter_budget: undefined,
           negotiation_reason: undefined
         } : null)
-       
+
         setShowBudgetNegotiation(false)
         setCounterBudget('')
         showToast("Success", result.message)
-       
+
       } else if (action === 'counter') {
         if (!counterBudget || counterBudget.trim() === '') {
           showToast("Error", "Please enter a counter budget amount.", "destructive");
           return;
         }
-       
+
         const counterAmount = parseFloat(counterBudget);
         if (isNaN(counterAmount) || counterAmount <= 0) {
           showToast("Error", "Please enter a valid budget amount (greater than 0).", "destructive");
           return;
         }
-       
+
         const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/counter-budget/`, {
           amount: counterAmount
         });
-       
+
         setTasks(prev => prev.map(task =>
           task.id === selectedTask.id
             ? {
@@ -615,21 +617,21 @@ const createTask = async (e: React.FormEvent) => {
               }
             : task
         ))
-       
+
         setSelectedTask(prev => prev ? {
           ...prev,
           proposed_budget: result.task.proposed_budget,
           negotiation_status: result.task.negotiation_status,
           status: result.task.status
         } : null)
-       
+
         setShowBudgetNegotiation(false)
         setCounterBudget('')
         showToast("Success", result.message)
-       
+
       } else if (action === 'reject') {
         const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/reject-budget/`);
-       
+
         setTasks(prev => prev.map(task =>
           task.id === selectedTask.id
             ? {
@@ -639,96 +641,96 @@ const createTask = async (e: React.FormEvent) => {
               }
             : task
         ))
-       
+
         setSelectedTask(prev => prev ? {
           ...prev,
           negotiation_status: result.task.negotiation_status,
           status: result.task.status
         } : null)
-       
+
         setShowBudgetNegotiation(false)
         setCounterBudget('')
         showToast("Info", result.message)
       }
-     
+
     } catch (error: any) {
       console.error('Failed to respond to budget negotiation:', error)
       showToast("Error", "Failed to process your request: " + error.message, "destructive")
     }
   }
 
-const approveTask = async () => {
-  if (!window.confirm("Approve and complete this assignment?")) return;
-  try {
-    setLoading(true);
-    const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask!.id}/approve/`);
-    
-    // Update state
-    setTasks(prev => prev.map(task =>
-      task.id === selectedTask!.id
-        ? { ...task, status: result.task.status }
-        : task
-    ));
-    
-    setSelectedTask(prev => prev ? { ...prev, status: result.task.status } : null);
-    
-    showToast("Success", result.message);
-  } catch (err: any) {
-    console.error('Failed to approve task:', err);
-    showToast("Error", "Failed to approve task: " + err.message, "destructive");
-  } finally {
-    setLoading(false);
-  }
-};
+  const approveTask = async () => {
+    if (!window.confirm("Approve and complete this assignment?")) return;
+    try {
+      setLoading(true);
+      const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask!.id}/approve/`);
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
-const MAX_FILES = 10;
+      // Update state
+      setTasks(prev => prev.map(task =>
+        task.id === selectedTask!.id
+          ? { ...task, status: result.task.status }
+          : task
+      ));
 
-const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-  const files = Array.from(e.target.files || []);
-  
-  setUploadedFiles(prev => {
-    const remainingSlots = MAX_FILES - prev.length;
-    const accepted: File[] = [];
-    let tooMany = false;
-    let tooLargeFiles: string[] = [];
+      setSelectedTask(prev => prev ? { ...prev, status: result.task.status } : null);
 
-    for (const file of files) {
-      if (accepted.length >= remainingSlots) {
-        tooMany = true;
-        break;
+      showToast("Success", result.message);
+    } catch (err: any) {
+      console.error('Failed to approve task:', err);
+      showToast("Error", "Failed to approve task: " + err.message, "destructive");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+  const MAX_FILES = 10;
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+
+    setUploadedFiles(prev => {
+      const remainingSlots = MAX_FILES - prev.length;
+      const accepted: File[] = [];
+      let tooMany = false;
+      let tooLargeFiles: string[] = [];
+
+      for (const file of files) {
+        if (accepted.length >= remainingSlots) {
+          tooMany = true;
+          break;
+        }
+
+        if (file.size > MAX_FILE_SIZE) {
+          tooLargeFiles.push(file.name);
+          continue;
+        }
+
+        accepted.push(file);
       }
 
-      if (file.size > MAX_FILE_SIZE) {
-        tooLargeFiles.push(file.name);
-        continue;
+      if (tooLargeFiles.length > 0) {
+        showToast(
+          "File too large",
+          `${tooLargeFiles.join(', ')} exceed(s) 10 MB and was not added.`,
+          "destructive"
+        );
       }
 
-      accepted.push(file);
-    }
+      if (tooMany) {
+        showToast(
+          "File limit reached",
+          `You can attach up to ${MAX_FILES} files per assignment.`,
+          "destructive"
+        );
+      }
 
-    if (tooLargeFiles.length > 0) {
-      showToast(
-        "File too large",
-        `${tooLargeFiles.join(', ')} exceed(s) 10 MB and was not added.`,
-        "destructive"
-      );
-    }
+      return [...prev, ...accepted];
+    });
 
-    if (tooMany) {
-      showToast(
-        "File limit reached",
-        `You can attach up to ${MAX_FILES} files per assignment.`,
-        "destructive"
-      );
-    }
-
-    return [...prev, ...accepted];
-  });
-
-  // reset input so same file can be selected again later if needed
-  e.target.value = "";
-};
+    // reset input so same file can be selected again later if needed
+    e.target.value = "";
+  };
 
   const removeFile = (index: number) => {
     setUploadedFiles(prev => prev.filter((_, i) => i !== index))
@@ -741,36 +743,36 @@ const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     return `${API_ROOT}${path}`;                               // API_ROOT already defined
   };
 
-const downloadFile = async (file: { id: number; name?: string; file_url?: string }) => {
-  try {
-    if (file.file_url) {
-      // Handle absolute and relative URLs uniformly
-      const href = makeAbsoluteFileUrl(file.file_url);
-      window.open(href, '_blank');
-      return;
+  const downloadFile = async (file: { id: number; name?: string; file_url?: string }) => {
+    try {
+      if (file.file_url) {
+        // Handle absolute and relative URLs uniformly
+        const href = makeAbsoluteFileUrl(file.file_url);
+        window.open(href, '_blank');
+        return;
+      }
+
+      // Fallback to API download route (keeps Authorization header)
+      const token = localStorage.getItem('access_token');
+      const res = await fetch(`${API_BASE}/files/${file.id}/download/`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error('Download failed');
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.name || 'download';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Failed to download file:', error);
+      showToast("Error", "Failed to download file. Please try again.", "destructive");
     }
-
-    // Fallback to API download route (keeps Authorization header)
-    const token = localStorage.getItem('access_token');
-    const res = await fetch(`${API_BASE}/files/${file.id}/download/`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    if (!res.ok) throw new Error('Download failed');
-
-    const blob = await res.blob();
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = file.name || 'download';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    window.URL.revokeObjectURL(url);
-  } catch (error) {
-    console.error('Failed to download file:', error);
-    showToast("Error", "Failed to download file. Please try again.", "destructive");
-  }
-};
+  };
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -785,6 +787,7 @@ const downloadFile = async (file: { id: number; name?: string; file_url?: string
       default: return 'bg-gray-100 text-gray-800 border-gray-200'
     }
   }
+
   const formatStatus = (status: string) => {
     const statusMap: any = {
       'budget_negotiation': 'Budget Negotiation',
@@ -795,6 +798,7 @@ const downloadFile = async (file: { id: number; name?: string; file_url?: string
       word.charAt(0).toUpperCase() + word.slice(1)
     ).join(' ')
   }
+
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'submitted': return 'ri-file-text-line'
@@ -808,6 +812,7 @@ const downloadFile = async (file: { id: number; name?: string; file_url?: string
       default: return 'ri-file-line'
     }
   }
+
   const getFileIcon = (type: string) => {
     switch (type.toLowerCase()) {
       case 'pdf': return 'ri-file-pdf-line'
@@ -826,12 +831,18 @@ const downloadFile = async (file: { id: number; name?: string; file_url?: string
       default: return 'ri-file-line'
     }
   }
+
+  // ---- FIX: helper to normalize negotiation status for "submitted" tasks ----
+  const normalizedNegotiationStatus = (t: any) =>
+    (t?.negotiation_status ?? (t?.status === 'submitted' ? 'pending_admin_review' : null));
+
   const filteredTasks = tasks.filter((task: any) => {
     const matchesStatus = filterStatus === 'all' || task.status === filterStatus
     const matchesSearch = task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
                          task.subject.toLowerCase().includes(searchQuery.toLowerCase())
     return matchesStatus && matchesSearch
   })
+
   const taskStats = {
     total: tasks.length,
     submitted: tasks.filter((t: any) => t.status === 'submitted').length,
@@ -840,50 +851,52 @@ const downloadFile = async (file: { id: number; name?: string; file_url?: string
     completed: tasks.filter((t: any) => t.status === 'completed').length,
     budget_negotiation: tasks.filter((t: any) => t.status === 'budget_negotiation').length
   }
+
   const canWithdraw = (task: any) => {
     return task.status === 'submitted' || task.status === 'budget_negotiation' || (task.status === 'in_progress' && new Date() < new Date(task.withdrawal_deadline))
   }
 
+  const requestRevision = async () => {
+    if (!revisionFeedback?.trim()) {
+      showToast("Required", "Add feedback", "destructive");
+      return;
+    }
+    try {
+      setLoading(true);
+      const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask!.id}/request-revision/`, {
+        feedback: revisionFeedback.trim()
+      });
 
-const requestRevision = async () => {
-  if (!revisionFeedback?.trim()) {
-    showToast("Required", "Add feedback", "destructive");
-    return;
-  }
-  try {
-    setLoading(true);
-    const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask!.id}/request-revision/`, {
-      feedback: revisionFeedback.trim()
-    });
-    
-    // Update state
-    setTasks(prev => prev.map(task =>
-      task.id === selectedTask!.id
-        ? { ...task, status: result.task.status }
-        : task
-    ));
-    
-    setSelectedTask(prev => prev ? { ...prev, status: result.task.status } : null);
-    setShowRevisionModal(false);
-    setRevisionFeedback('');
-    
-    showToast("Success", result.message);
-  } catch (err: any) {
-    console.error('Failed to request revision:', err);
-    showToast("Error", "Failed to request revision: " + err.message, "destructive");
-  } finally {
-    setLoading(false);
-  }
-};
+      // Update state
+      setTasks(prev => prev.map(task =>
+        task.id === selectedTask!.id
+          ? { ...task, status: result.task.status }
+          : task
+      ));
+
+      setSelectedTask(prev => prev ? { ...prev, status: result.task.status } : null);
+      setShowRevisionModal(false);
+      setRevisionFeedback('');
+
+      showToast("Success", result.message);
+    } catch (err: any) {
+      console.error('Failed to request revision:', err);
+      showToast("Error", "Failed to request revision: " + err.message, "destructive");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const canApprove = (task: any) => {
     return task.status === 'awaiting_review'
   }
+
   const handleLogout = () => {
     logout()
     navigate('/')
     showToast("Logged out", "You have been successfully logged out.")
   }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 flex items-center justify-center">
@@ -894,6 +907,7 @@ const requestRevision = async () => {
       </div>
     )
   }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
       {/* Toast Notification */}
@@ -904,6 +918,7 @@ const requestRevision = async () => {
           variant={currentToast.variant}
         />
       )}
+
       {/* Modern Header */}
       <header className="bg-white/90 backdrop-blur-xl border-b border-gray-200 sticky top-0 z-40 shadow-lg">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -957,7 +972,7 @@ const requestRevision = async () => {
           </div>
         </div>
       </header>
-      
+
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Enhanced Stats Cards */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 md:gap-6 mb-8">
@@ -1028,13 +1043,14 @@ const requestRevision = async () => {
             </div>
           </div>
         </div>
+
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Enhanced Tasks List */}
           <div className="lg:col-span-1">
             <div className="bg-white rounded-3xl shadow-xl border border-gray-100 overflow-hidden">
               <div className="p-6 border-b border-gray-100 bg-gradient-to-r from-blue-50 via-purple-50 to-indigo-50">
                 <h2 className="text-2xl font-bold text-gray-900 mb-4">My Assignments</h2>
-               
+
                 {/* Search */}
                 <div className="relative mb-4">
                   <i className="ri-search-line absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
@@ -1045,6 +1061,7 @@ const requestRevision = async () => {
                     className="pl-10 bg-white border-gray-200 rounded-xl"
                   />
                 </div>
+
                 {/* Enhanced Filter Tabs */}
                 <div className="flex gap-2 overflow-x-auto pb-2">
                   {['all', 'submitted', 'budget_negotiation', 'in_progress', 'awaiting_review', 'completed'].map(status => (
@@ -1062,6 +1079,7 @@ const requestRevision = async () => {
                   ))}
                 </div>
               </div>
+
               <div className="divide-y divide-gray-100 max-h-[700px] overflow-y-auto">
                 {filteredTasks.length === 0 ? (
                   <div className="p-8 text-center">
@@ -1090,7 +1108,7 @@ const requestRevision = async () => {
                         <i className={`${getStatusIcon(task.status)} text-2xl flex-shrink-0`}></i>
                       </div>
                       <p className="text-sm text-gray-600 mb-3">{task.subject} • {task.education_level}</p>
-                     
+
                       {/* Budget Negotiation Alert */}
                       {task.status === 'budget_negotiation' && (
                         <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 mb-3">
@@ -1103,7 +1121,7 @@ const requestRevision = async () => {
                           </p>
                         </div>
                       )}
-                     
+
                       <div className="flex items-center justify-between mb-3">
                         <span className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-full border ${getStatusColor(task.status)}`}>
                           {formatStatus(task.status)}
@@ -1113,7 +1131,7 @@ const requestRevision = async () => {
                           {new Date(task.deadline).toLocaleDateString()}
                         </span>
                       </div>
-                     
+
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <i className="ri-attachment-line text-gray-400"></i>
@@ -1128,6 +1146,7 @@ const requestRevision = async () => {
                           </div>
                         )}
                       </div>
+
                       {task.revisions && task.revisions.length > 0 && (
                         <div className="mt-2 flex items-center gap-1 text-xs text-orange-600">
                           <i className="ri-edit-line"></i>
@@ -1140,6 +1159,7 @@ const requestRevision = async () => {
               </div>
             </div>
           </div>
+
           {/* Enhanced Task Details & Communication */}
           <div className="lg:col-span-2">
             {selectedTask ? (
@@ -1179,8 +1199,10 @@ const requestRevision = async () => {
                       {formatStatus(selectedTask.status)}
                     </span>
                   </div>
+
                   {/* Budget Negotiation Section */}
-                  {selectedTask.negotiation_status !== 'accepted' && (selectedTask.status === 'submitted' || selectedTask.status === 'budget_negotiation') && (
+                  {normalizedNegotiationStatus(selectedTask) !== 'accepted' &&
+                   (selectedTask.status === 'submitted' || selectedTask.status === 'budget_negotiation') && (
                     <div className="bg-blue-50 border border-blue-200 rounded-2xl p-6 mb-6">
                       <h3 className="font-bold text-blue-900 mb-3 text-lg flex items-center gap-2">
                         <i className="ri-money-dollar-circle-line"></i>
@@ -1204,7 +1226,7 @@ const requestRevision = async () => {
                           <p className="text-gray-800">{selectedTask.negotiation_reason}</p>
                         </div>
                       )}
-                      {selectedTask.negotiation_status === 'pending_student_response' && (
+                      {normalizedNegotiationStatus(selectedTask) === 'pending_student_response' && (
                         <div className="flex gap-3">
                           <Button
                             onClick={() => respondToBudgetNegotiation('accept')}
@@ -1231,7 +1253,7 @@ const requestRevision = async () => {
                           </Button>
                         </div>
                       )}
-                      {selectedTask.negotiation_status === 'pending_admin_review' && (
+                      {normalizedNegotiationStatus(selectedTask) === 'pending_admin_review' && (
                         <div className="flex items-center gap-2 text-orange-600 bg-white rounded-lg p-4">
                           <i className="ri-time-line text-xl"></i>
                           <span className="font-medium">Waiting for expert to review your budget...</span>
@@ -1239,8 +1261,10 @@ const requestRevision = async () => {
                       )}
                     </div>
                   )}
+
                   {/* Status Information */}
-                  {selectedTask.status === 'submitted' && selectedTask.negotiation_status === 'pending_admin_review' && (
+                  {selectedTask.status === 'submitted' &&
+                   normalizedNegotiationStatus(selectedTask) === 'pending_admin_review' && (
                     <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 mb-6">
                       <div className="flex items-center gap-3">
                         <i className="ri-time-line text-3xl text-amber-600"></i>
@@ -1251,7 +1275,6 @@ const requestRevision = async () => {
                       </div>
                     </div>
                   )}
-
 
                   {/* IN PROGRESS – Compact */}
                   {selectedTask.status === 'in_progress' && (
@@ -1266,7 +1289,7 @@ const requestRevision = async () => {
                       <div className="bg-white rounded-lg p-4">
                         <div className="w-full bg-gray-200 rounded-full h-2.5">
                           <div
-                            className="h-full bg-gradient-to-r from-blue-500 to-blue-600 rounded-full transition-all duration-700"
+                            className="h-full rounded-full transition-all duration-700"
                             style={{ width: `${selectedTask.progress || 0}%` }}
                           />
                         </div>
@@ -1372,7 +1395,7 @@ const requestRevision = async () => {
                           ))}
                       </div>
                     </div>
-                  )}                
+                  )}
 
                   {/* Files Section */}
                   <div className="bg-white rounded-2xl p-6 shadow-sm mt-6">
@@ -1404,7 +1427,6 @@ const requestRevision = async () => {
                   </div>
                 </div>
 
-                
                 {/* Revisions Section */}
                 {selectedTask.revisions && selectedTask.revisions.length > 0 && (
                   <div className="p-6 border-b border-gray-100 bg-orange-50">
@@ -1434,6 +1456,7 @@ const requestRevision = async () => {
                     </div>
                   </div>
                 )}
+
                 {/* Enhanced Chat Section */}
                 <div className="p-6">
                   <div className="flex items-center justify-between mb-4">
@@ -1451,7 +1474,7 @@ const requestRevision = async () => {
                       Refresh
                     </Button>
                   </div>
-                 
+
                   {/* Messages */}
                   <div className="bg-gray-50 rounded-2xl border border-gray-200 h-[50vh] md:h-96 flex flex-col">
                     <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -1523,7 +1546,6 @@ const requestRevision = async () => {
                             );
                           })}
 
-                         
                           {/* Typing Indicator */}
                           {isTyping && (
                             <div className="flex justify-start">
@@ -1537,12 +1559,12 @@ const requestRevision = async () => {
                               </div>
                             </div>
                           )}
-                         
+
                           <div ref={chatEndRef} />
                         </>
                       )}
                     </div>
-                   
+
                     {/* Enhanced Message Input */}
                     <div className="border-t border-gray-200 p-4 bg-white rounded-b-2xl">
                       {uploadedFiles.length > 0 && (
@@ -1609,6 +1631,7 @@ const requestRevision = async () => {
           </div>
         </div>
       </div>
+
       {/* Enhanced Create Task Modal - RESIZED */}
       {showCreateTask && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
@@ -1619,7 +1642,7 @@ const requestRevision = async () => {
                 <i className="ri-close-line text-xl text-gray-600"></i>
               </button>
             </div>
-           
+
             <form onSubmit={createTask} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1633,6 +1656,7 @@ const requestRevision = async () => {
                   required
                 />
               </div>
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1676,6 +1700,7 @@ const requestRevision = async () => {
                   </select>
                 </div>
               </div>
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1706,6 +1731,7 @@ const requestRevision = async () => {
                   </select>
                 </div>
               </div>
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Proposed Budget (USD)
@@ -1722,6 +1748,7 @@ const requestRevision = async () => {
                 />
                 <p className="text-xs text-gray-500 mt-1">Expert may propose a different budget</p>
               </div>
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Assignment Description
@@ -1735,6 +1762,7 @@ const requestRevision = async () => {
                   required
                 />
               </div>
+
               {/* File Upload Section */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1775,6 +1803,7 @@ const requestRevision = async () => {
                   </div>
                 )}
               </div>
+
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
                 <div className="flex items-start gap-2">
                   <i className="ri-information-line text-blue-600 text-sm mt-0.5"></i>
@@ -1789,6 +1818,7 @@ const requestRevision = async () => {
                   </div>
                 </div>
               </div>
+
               <div className="flex gap-3 pt-4">
                 <Button
                   type="button"
@@ -1810,6 +1840,7 @@ const requestRevision = async () => {
           </div>
         </div>
       )}
+
       {/* Budget Negotiation Modal */}
       {showBudgetNegotiation && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
@@ -1821,7 +1852,7 @@ const requestRevision = async () => {
               <h3 className="text-2xl font-bold text-gray-900 mb-2">Counter Offer</h3>
               <p className="text-gray-600">Propose your budget for this assignment</p>
             </div>
-           
+
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1838,7 +1869,7 @@ const requestRevision = async () => {
                   required
                 />
               </div>
-             
+
               <div className="bg-gray-50 rounded-lg p-4">
                 <div className="flex justify-between text-sm text-gray-600 mb-1">
                   <span>Expert's Offer:</span>
@@ -1850,6 +1881,7 @@ const requestRevision = async () => {
                 </div>
               </div>
             </div>
+
             <div className="flex gap-3 mt-6">
               <Button
                 onClick={() => setShowBudgetNegotiation(false)}
@@ -1870,7 +1902,6 @@ const requestRevision = async () => {
         </div>
       )}
 
-      
       {/* Withdraw Task Modal */}
       {showWithdrawModal && selectedTask && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
@@ -1882,7 +1913,7 @@ const requestRevision = async () => {
               <h3 className="text-2xl font-bold text-gray-900 mb-2">Withdraw Assignment</h3>
               <p className="text-gray-600">Are you sure you want to withdraw this assignment?</p>
             </div>
-           
+
             <div className="bg-gray-50 rounded-xl p-4 mb-6">
               <p className="text-sm text-gray-700 mb-2">
                 <strong>Assignment:</strong> {selectedTask.title}
@@ -1924,6 +1955,7 @@ const requestRevision = async () => {
           </div>
         </div>
       )}
+
       {/* Request Revision Modal */}
       {showRevisionModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
@@ -1934,7 +1966,7 @@ const requestRevision = async () => {
                 <i className="ri-close-line text-xl text-gray-600"></i>
               </button>
             </div>
-           
+
             <div className="mb-6">
               <label className="block text-lg font-bold text-gray-700 mb-3">
                 Revision Feedback
@@ -1977,6 +2009,7 @@ const requestRevision = async () => {
           </div>
         </div>
       )}
+
       <style>{`
         @keyframes fade-in {
           from { opacity: 0; }
