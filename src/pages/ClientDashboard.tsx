@@ -247,20 +247,37 @@ export default function ClientDashboard() {
       console.log('Task WebSocket message:', data);
       
       if (data.type === 'chat_message' && data.message) {
-      // Add new chat message to the chat in real-time
-      // Remove ONLY the matching optimistic temp message, not the whole history
-      setChatMessages(prev => {
-        const filtered = prev.filter(
-          msg => !(msg.id > 1000000 && msg.message === data.message.message)
-        );
-        return [...filtered, data.message];
-      });
+        setChatMessages(prev => {
+          // Already have this exact saved message?
+          if (prev.some(m => m.id === data.message.id)) return prev;
 
-      // Auto-scroll to bottom
-      setTimeout(() => {
-        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-      }, 100);
-    }
+          let changed = false;
+          const next = prev.map(m => {
+            const matchByText =
+              m.id > 1000000 &&
+              !!data.message.message &&
+              m.message === data.message.message;
+
+            const matchPendingFile =
+              m.id > 1000000 &&
+              m.file_url === 'pending' &&
+              !!data.message.file_url;
+
+            if (matchByText || matchPendingFile) {
+              changed = true;
+              return data.message;
+            }
+            return m;
+          });
+
+          return changed ? next : [...prev, data.message];
+        });
+
+        setTimeout(() => {
+          chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }, 100);
+      }
+
 
      
       if (data.type === 'user_typing') {
@@ -370,43 +387,58 @@ const sendMessage = async () => {
   if (!newMessage.trim() && uploadedFiles.length === 0) return;
   if (!selectedTask) return;
 
-  try {
-    console.log('Sending message:', newMessage);
+  let optimisticId: number | null = null;
 
-    // Stop typing indicator
+  try {
+    // stop typing indicator
     setIsTyping(false);
     handleTyping(false);
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-    }
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
 
+    // 1) add an optimistic bubble immediately
+    const optimisticMessage = {
+      id: Date.now(),                                // temp id
+      message: newMessage.trim(),
+      sender: currentUser?.username || 'You',
+      sender_role: 'client',
+      created_at: new Date().toISOString(),
+      is_read: false,
+      ...(uploadedFiles.length > 0
+        ? { file_url: 'pending', file_name: uploadedFiles[0]?.name }
+        : {}),
+    };
+    optimisticId = optimisticMessage.id;
+    setChatMessages(prev => [...prev, optimisticMessage]);
+    setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+
+    // 2) POST and capture the *saved* message from the API
+    let saved: any;
     if (uploadedFiles.length > 0) {
       const formData = new FormData();
-      if (newMessage.trim()) {
-        formData.append('message', newMessage.trim());
-      }
-      uploadedFiles.forEach(file => {
-        formData.append('file', file);
-      });
-      await apiService.postFormData(`/tasks/${selectedTask.id}/chat/`, formData);
+      if (newMessage.trim()) formData.append('message', newMessage.trim());
+      uploadedFiles.forEach(file => formData.append('file', file));
+      saved = await apiService.postFormData<any>(`/tasks/${selectedTask.id}/chat/`, formData);
     } else {
-      await apiService.post(`/tasks/${selectedTask.id}/chat/`, {
+      saved = await apiService.post<any>(`/tasks/${selectedTask.id}/chat/`, {
         message: newMessage.trim(),
       });
     }
 
-    // DO NOT touch chatMessages here – WebSocket will add the real message
+    // 3) replace the optimistic bubble with the real one
+    setChatMessages(prev => prev.map(m => (m.id === optimisticId ? saved : m)));
+
+    // 4) clear inputs
     setNewMessage('');
     setUploadedFiles([]);
-
   } catch (error: any) {
+    // rollback optimistic on error
+    if (optimisticId !== null) {
+      setChatMessages(prev => prev.filter(m => m.id !== optimisticId));
+    }
     console.error('Failed to send message:', error);
     showToast("Error", "Failed to send message: " + error.message, "destructive");
   }
 };
-
-
-
 
   const refreshChat = () => {
     if (selectedTask) {
