@@ -631,6 +631,51 @@ export default function AdminDashboard() {
     setUploadedFiles(prev => prev.filter((_, i) => i !== index))
   }
 
+  // --- Authenticated download helper ---
+const downloadFile = async (file: TaskFile) => {
+  try {
+    const token = localStorage.getItem('access_token');
+
+    // Prefer a backend download endpoint; fall back to serializer URL
+    const fallback = file.file_url || `/files/${file.id}/download/`;
+    const url = fallback.startsWith('http')
+      ? fallback
+      : `${API_BASE}${fallback.startsWith('/') ? '' : '/'}${fallback}`;
+
+    const isSameOrigin =
+      url.startsWith(window.location.origin) || url.startsWith(API_BASE);
+
+    if (isSameOrigin) {
+      const res = await fetch(url, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error(`Download failed (${res.status})`);
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = file.name || 'download';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } else {
+      // Public URL (e.g., S3)
+      window.open(url, '_blank');
+    }
+  } catch (err) {
+    console.error('Download error:', err);
+    setCurrentToast({
+      title: 'Error',
+      description: 'Failed to download file.',
+      variant: 'destructive',
+    });
+    setTimeout(() => setCurrentToast(null), 3000);
+  }
+};
+
+
   const handleLogout = () => {
     logout()
     navigate('/')
@@ -1095,11 +1140,14 @@ export default function AdminDashboard() {
                             <p className="font-medium text-gray-900 truncate">{file.name}</p>
                             <p className="text-xs text-gray-500">{file.size} • {file.uploaded_by_name}</p>
                           </div>
-                          <a href={file.file_url} download>
-                            <Button size="sm" variant="outline" className="whitespace-nowrap">
-                              <i className="ri-download-line"></i>
-                            </Button>
-                          </a>
+                         <Button
+                          size="sm"
+                          variant="outline"
+                          className="whitespace-nowrap"
+                          onClick={() => downloadFile(file)}
+                        >
+                          <i className="ri-download-line"></i>
+                        </Button>
                         </div>
                       ))}
                     </div>
@@ -1164,10 +1212,25 @@ export default function AdminDashboard() {
                                 {message.file_url && (
                                   <div className="mb-2">
                                     <div className={`text-xs p-2 rounded-lg ${message.sender_role === 'admin' ? 'bg-white/20' : 'bg-gray-100'}`}>
-                                      <a href={message.file_url} download className="flex items-center gap-1 hover:underline">
+                                      <button
+                                        className="flex items-center gap-1 hover:underline"
+                                        onClick={() =>
+                                          downloadFile({
+                                            id: 0, // if you have a real id on the message, use it instead of 0
+                                            name: message.file_name || 'file',
+                                            file_type: '',
+                                            size: '',
+                                            uploaded_by: 0,
+                                            uploaded_by_name: '',
+                                            uploaded_at: '',
+                                            description: '',
+                                            file_url: message.file_url || '',
+                                          })
+                                        }
+                                      >
                                         <i className="ri-attachment-line"></i>
                                         {message.file_name || 'Download file'}
-                                      </a>
+                                      </button>
                                     </div>
                                   </div>
                                 )}
