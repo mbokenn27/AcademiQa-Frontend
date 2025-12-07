@@ -12,9 +12,7 @@ const useToast = () => {
     setToast({ title, description, variant })
     setTimeout(() => setToast(null), 3000)
   }
-  return {
-    toast: showToast
-  }
+  return { toast: showToast }
 }
 
 // Toast Component
@@ -56,7 +54,6 @@ const useWebSocketWithReconnect = (url: string | null, onMessage: (data: any) =>
         return;
       }
 
-      // Prefer env WS base (e.g. wss://academiqa-backend-production.up.railway.app)
       const ENV_WS_BASE =
         (import.meta as any).env?.VITE_WS_BASE ||
         `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
@@ -171,12 +168,12 @@ const timezones = [
   { value: 'Asia/Tokyo', label: 'Japan Standard Time (JST)' },
   { value: 'Asia/Shanghai', label: 'China Standard Time (CST)' },
   { value: 'Asia/Kolkata', label: 'India Standard Time (IST)' },
-  { value: 'Australia/Sydney', label: 'Australian Eastern Time (AET)'}
+  { value: 'Australia/Sydney', label: 'Australian Eastern Time (AET)' }
 ]
 
 export default function ClientDashboard() {
   const navigate = useNavigate()
-  const { logout, user } = useAuth()
+  const { logout } = useAuth()
   const { toast } = useToast()
   const [currentToast, setCurrentToast] = useState<{ title: string; description: string; variant?: string } | null>(null)
   const [currentUser, setCurrentUser] = useState<any>(null)
@@ -211,14 +208,13 @@ export default function ClientDashboard() {
     budget: ''
   })
 
-  // Custom toast function
   const showToast = (title: string, description: string, variant?: string) => {
     setCurrentToast({ title, description, variant })
     setTimeout(() => setCurrentToast(null), 3000)
   }
 
   // WebSocket for client dashboard updates
-  const { sendMessage: sendClientMessage } = useWebSocketWithReconnect('/ws/client/', (data) => {
+  useWebSocketWithReconnect('/ws/client/', (data) => {
     console.log('Client WebSocket message:', data);
 
     if (data.type === 'task_updated' && data.task) {
@@ -247,7 +243,6 @@ export default function ClientDashboard() {
 
       if (data.type === 'chat_message' && data.message) {
         setChatMessages(prev => {
-          // Already have this exact saved message?
           if (prev.some(m => m.id === data.message.id)) return prev;
 
           let changed = false;
@@ -314,17 +309,13 @@ export default function ClientDashboard() {
   const loadInitialData = async () => {
     try {
       setLoading(true)
-
-      // Load current user
       const userData = await apiService.get<any>('/auth/user/')
       setCurrentUser(userData)
 
-      // Load tasks
       const tasksData = await apiService.get<any[]>('/tasks/')
       setTasks(tasksData)
-      if (tasksData.length > 0) {
-        setSelectedTask(tasksData[0])
-      }
+      if (tasksData.length > 0) setSelectedTask(tasksData[0])
+
       showToast("Dashboard Loaded", "Your dashboard has been loaded successfully")
     } catch (error) {
       console.error('Failed to load data:', error)
@@ -338,7 +329,6 @@ export default function ClientDashboard() {
     try {
       const messages = await apiService.get<any[]>(`/tasks/${taskId}/chat/`)
       setChatMessages(messages)
-
       setTimeout(() => {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
@@ -350,28 +340,18 @@ export default function ClientDashboard() {
 
   const handleTyping = (typing: boolean) => {
     if (selectedTask && sendTaskMessage) {
-      sendTaskMessage({
-        type: 'typing',
-        is_typing: typing
-      });
+      sendTaskMessage({ type: 'typing', is_typing: typing });
     }
   };
 
   const handleMessageInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setNewMessage(e.target.value);
 
-    // Handle typing indicators
     if (!isTyping) {
       setIsTyping(true);
       handleTyping(true);
     }
-
-    // Clear existing timeout
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-    }
-
-    // Set timeout to stop typing indicator
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
       setIsTyping(false);
       handleTyping(false);
@@ -381,9 +361,7 @@ export default function ClientDashboard() {
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      if (newMessage.trim()) {
-        sendMessage()
-      }
+      if (newMessage.trim()) sendMessage()
     }
   }
 
@@ -394,14 +372,12 @@ export default function ClientDashboard() {
     let optimisticId: number | null = null;
 
     try {
-      // stop typing indicator
       setIsTyping(false);
       handleTyping(false);
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
 
-      // 1) add an optimistic bubble immediately
       const optimisticMessage = {
-        id: Date.now(),                                // temp id
+        id: Date.now(),
         message: newMessage.trim(),
         sender: currentUser?.username || 'You',
         sender_role: 'client',
@@ -415,7 +391,6 @@ export default function ClientDashboard() {
       setChatMessages(prev => [...prev, optimisticMessage]);
       setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
 
-      // 2) POST and capture the *saved* message from the API
       let saved: any;
       if (uploadedFiles.length > 0) {
         const formData = new FormData();
@@ -423,22 +398,14 @@ export default function ClientDashboard() {
         uploadedFiles.forEach(file => formData.append('file', file));
         saved = await apiService.postFormData<any>(`/tasks/${selectedTask.id}/chat/`, formData);
       } else {
-        saved = await apiService.post<any>(`/tasks/${selectedTask.id}/chat/`, {
-          message: newMessage.trim(),
-        });
+        saved = await apiService.post<any>(`/tasks/${selectedTask.id}/chat/`, { message: newMessage.trim() });
       }
 
-      // 3) replace the optimistic bubble with the real one
       setChatMessages(prev => prev.map(m => (m.id === optimisticId ? saved : m)));
-
-      // 4) clear inputs
       setNewMessage('');
       setUploadedFiles([]);
     } catch (error: any) {
-      // rollback optimistic on error
-      if (optimisticId !== null) {
-        setChatMessages(prev => prev.filter(m => m.id !== optimisticId));
-      }
+      if (optimisticId !== null) setChatMessages(prev => prev.filter(m => m.id !== optimisticId));
       console.error('Failed to send message:', error);
       showToast("Error", "Failed to send message: " + error.message, "destructive");
     }
@@ -453,11 +420,8 @@ export default function ClientDashboard() {
 
   const createTask = async (e: React.FormEvent) => {
     e.preventDefault();
-
-    // 1) Optimistic toast right away (no waiting)
     showToast("Submitting…", "We're creating your assignment now.");
 
-    // 2) Build the request payload
     const formData = new FormData();
     formData.append('title', taskForm.title);
     formData.append('description', taskForm.description);
@@ -468,7 +432,6 @@ export default function ClientDashboard() {
     formData.append('proposed_budget', taskForm.budget);
     uploadedFiles.forEach((file) => formData.append('file', file));
 
-    // 3) Optimistically add a temp task so UI feels instant
     const tempId = Date.now();
     const optimisticTask = {
       id: tempId,
@@ -488,28 +451,19 @@ export default function ClientDashboard() {
 
     setTasks(prev => [optimisticTask, ...prev]);
     setSelectedTask(optimisticTask);
-    setShowCreateTask(false); // close immediately for snappy UX
+    setShowCreateTask(false);
 
     try {
       const newTask = await apiService.postFormData<any>('/tasks/', formData);
-
-      // 4) Reconcile optimistic task with the real one
       setTasks(prev => prev.map(t => (t.id === tempId ? newTask : t)));
       setSelectedTask(newTask);
-
-      // Success toast
       showToast("Success", "Task submitted successfully!");
     } catch (error: any) {
-      // Rollback optimistic task on error
       setTasks(prev => prev.filter(t => t.id !== tempId));
       if (selectedTask?.id === tempId) setSelectedTask(null);
-
       showToast("Error", "Failed: " + (error.message || "Please try again"), "destructive");
-
-      // Reopen the modal so user can retry / edit
       setShowCreateTask(true);
     } finally {
-      // Reset form regardless
       setTaskForm({
         title: '',
         description: '',
@@ -525,7 +479,6 @@ export default function ClientDashboard() {
 
   const withdrawTask = async () => {
     if (!selectedTask) return
-
     try {
       const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/withdraw/`, {
         reason: withdrawalReason
@@ -533,25 +486,15 @@ export default function ClientDashboard() {
 
       setTasks(prev => prev.map(task =>
         task.id === selectedTask.id
-          ? {
-              ...task,
-              status: result.task.status,
-              withdrawal_reason: result.task.withdrawal_reason
-            }
+          ? { ...task, status: result.task.status, withdrawal_reason: result.task.withdrawal_reason }
           : task
       ))
 
-      setSelectedTask(prev => prev ? {
-        ...prev,
-        status: result.task.status,
-        withdrawal_reason: result.task.withdrawal_reason
-      } : null)
+      setSelectedTask(prev => prev ? { ...prev, status: result.task.status, withdrawal_reason: result.task.withdrawal_reason } : null)
 
       setShowWithdrawModal(false)
       setWithdrawalReason('')
-
       showToast("Success", result.message)
-
     } catch (error: any) {
       console.error('Failed to withdraw task:', error)
       showToast("Error", "Failed to withdraw task: " + error.message, "destructive")
@@ -560,99 +503,50 @@ export default function ClientDashboard() {
 
   const respondToBudgetNegotiation = async (action: 'accept' | 'counter' | 'reject') => {
     if (!selectedTask) return
-
     try {
       if (action === 'accept') {
         const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/accept-budget/`);
-
         setTasks(prev => prev.map(task =>
           task.id === selectedTask.id
-            ? {
-                ...task,
-                budget: result.task.budget,
-                negotiation_status: result.task.negotiation_status,
-                status: result.task.status,
-                admin_counter_budget: undefined,
-                negotiation_reason: undefined
-              }
+            ? { ...task, budget: result.task.budget, negotiation_status: result.task.negotiation_status, status: result.task.status, admin_counter_budget: undefined, negotiation_reason: undefined }
             : task
         ))
-
-        setSelectedTask(prev => prev ? {
-          ...prev,
-          budget: result.task.budget,
-          negotiation_status: result.task.negotiation_status,
-          status: result.task.status,
-          admin_counter_budget: undefined,
-          negotiation_reason: undefined
-        } : null)
-
+        setSelectedTask(prev => prev ? { ...prev, budget: result.task.budget, negotiation_status: result.task.negotiation_status, status: result.task.status, admin_counter_budget: undefined, negotiation_reason: undefined } : null)
         setShowBudgetNegotiation(false)
         setCounterBudget('')
         showToast("Success", result.message)
-
       } else if (action === 'counter') {
         if (!counterBudget || counterBudget.trim() === '') {
           showToast("Error", "Please enter a counter budget amount.", "destructive");
           return;
         }
-
         const counterAmount = parseFloat(counterBudget);
         if (isNaN(counterAmount) || counterAmount <= 0) {
           showToast("Error", "Please enter a valid budget amount (greater than 0).", "destructive");
           return;
         }
-
-        const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/counter-budget/`, {
-          amount: counterAmount
-        });
-
+        const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/counter-budget/`, { amount: counterAmount });
         setTasks(prev => prev.map(task =>
           task.id === selectedTask.id
-            ? {
-                ...task,
-                proposed_budget: result.task.proposed_budget,
-                negotiation_status: result.task.negotiation_status,
-                status: result.task.status
-              }
+            ? { ...task, proposed_budget: result.task.proposed_budget, negotiation_status: result.task.negotiation_status, status: result.task.status }
             : task
         ))
-
-        setSelectedTask(prev => prev ? {
-          ...prev,
-          proposed_budget: result.task.proposed_budget,
-          negotiation_status: result.task.negotiation_status,
-          status: result.task.status
-        } : null)
-
+        setSelectedTask(prev => prev ? { ...prev, proposed_budget: result.task.proposed_budget, negotiation_status: result.task.negotiation_status, status: result.task.status } : null)
         setShowBudgetNegotiation(false)
         setCounterBudget('')
         showToast("Success", result.message)
-
       } else if (action === 'reject') {
         const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/reject-budget/`);
-
         setTasks(prev => prev.map(task =>
           task.id === selectedTask.id
-            ? {
-                ...task,
-                negotiation_status: result.task.negotiation_status,
-                status: result.task.status
-              }
+            ? { ...task, negotiation_status: result.task.negotiation_status, status: result.task.status }
             : task
         ))
-
-        setSelectedTask(prev => prev ? {
-          ...prev,
-          negotiation_status: result.task.negotiation_status,
-          status: result.task.status
-        } : null)
-
+        setSelectedTask(prev => prev ? { ...prev, negotiation_status: result.task.negotiation_status, status: result.task.status } : null)
         setShowBudgetNegotiation(false)
         setCounterBudget('')
         showToast("Info", result.message)
       }
-
     } catch (error: any) {
       console.error('Failed to respond to budget negotiation:', error)
       showToast("Error", "Failed to process your request: " + error.message, "destructive")
@@ -664,16 +558,10 @@ export default function ClientDashboard() {
     try {
       setLoading(true);
       const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask!.id}/approve/`);
-
-      // Update state
       setTasks(prev => prev.map(task =>
-        task.id === selectedTask!.id
-          ? { ...task, status: result.task.status }
-          : task
+        task.id === selectedTask!.id ? { ...task, status: result.task.status } : task
       ));
-
       setSelectedTask(prev => prev ? { ...prev, status: result.task.status } : null);
-
       showToast("Success", result.message);
     } catch (err: any) {
       console.error('Failed to approve task:', err);
@@ -700,35 +588,22 @@ export default function ClientDashboard() {
           tooMany = true;
           break;
         }
-
         if (file.size > MAX_FILE_SIZE) {
           tooLargeFiles.push(file.name);
           continue;
         }
-
         accepted.push(file);
       }
 
       if (tooLargeFiles.length > 0) {
-        showToast(
-          "File too large",
-          `${tooLargeFiles.join(', ')} exceed(s) 10 MB and was not added.`,
-          "destructive"
-        );
+        showToast("File too large", `${tooLargeFiles.join(', ')} exceed(s) 10 MB and was not added.`, "destructive");
       }
-
       if (tooMany) {
-        showToast(
-          "File limit reached",
-          `You can attach up to ${MAX_FILES} files per assignment.`,
-          "destructive"
-        );
+        showToast("File limit reached", `You can attach up to ${MAX_FILES} files per assignment.`, "destructive");
       }
-
       return [...prev, ...accepted];
     });
 
-    // reset input so same file can be selected again later if needed
     e.target.value = "";
   };
 
@@ -738,21 +613,18 @@ export default function ClientDashboard() {
 
   const makeAbsoluteFileUrl = (u: string) => {
     if (!u) return u;
-    if (/^https?:\/\//i.test(u)) return u;                     // already absolute
-    const path = u.startsWith('/') ? u : `/${u}`;              // normalize
-    return `${API_ROOT}${path}`;                               // API_ROOT already defined
+    if (/^https?:\/\//i.test(u)) return u;
+    const path = u.startsWith('/') ? u : `/${u}`;
+    return `${API_ROOT}${path}`;
   };
 
   const downloadFile = async (file: { id: number; name?: string; file_url?: string }) => {
     try {
       if (file.file_url) {
-        // Handle absolute and relative URLs uniformly
         const href = makeAbsoluteFileUrl(file.file_url);
         window.open(href, '_blank');
         return;
       }
-
-      // Fallback to API download route (keeps Authorization header)
       const token = localStorage.getItem('access_token');
       const res = await fetch(`${API_BASE}/files/${file.id}/download/`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -813,29 +685,6 @@ export default function ClientDashboard() {
     }
   }
 
-  const getFileIcon = (type: string) => {
-    switch (type.toLowerCase()) {
-      case 'pdf': return 'ri-file-pdf-line'
-      case 'word':
-      case 'docx':
-      case 'doc': return 'ri-file-word-line'
-      case 'excel':
-      case 'xlsx':
-      case 'xls': return 'ri-file-excel-line'
-      case 'powerpoint':
-      case 'pptx':
-      case 'ppt': return 'ri-file-ppt-line'
-      case 'python':
-      case 'py': return 'ri-file-code-line'
-      case 'csv': return 'ri-file-chart-line'
-      default: return 'ri-file-line'
-    }
-  }
-
-  // ---- FIX: helper to normalize negotiation status for "submitted" tasks ----
-  const normalizedNegotiationStatus = (t: any) =>
-    (t?.negotiation_status ?? (t?.status === 'submitted' ? 'pending_admin_review' : null));
-
   const filteredTasks = tasks.filter((task: any) => {
     const matchesStatus = filterStatus === 'all' || task.status === filterStatus
     const matchesSearch = task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -867,17 +716,12 @@ export default function ClientDashboard() {
         feedback: revisionFeedback.trim()
       });
 
-      // Update state
       setTasks(prev => prev.map(task =>
-        task.id === selectedTask!.id
-          ? { ...task, status: result.task.status }
-          : task
+        task.id === selectedTask!.id ? { ...task, status: result.task.status } : task
       ));
-
       setSelectedTask(prev => prev ? { ...prev, status: result.task.status } : null);
       setShowRevisionModal(false);
       setRevisionFeedback('');
-
       showToast("Success", result.message);
     } catch (err: any) {
       console.error('Failed to request revision:', err);
@@ -887,9 +731,7 @@ export default function ClientDashboard() {
     }
   };
 
-  const canApprove = (task: any) => {
-    return task.status === 'awaiting_review'
-  }
+  const canApprove = (task: any) => task.status === 'awaiting_review'
 
   const handleLogout = () => {
     logout()
@@ -1200,9 +1042,12 @@ export default function ClientDashboard() {
                     </span>
                   </div>
 
-                  {/* Budget Negotiation Section */}
-                  {normalizedNegotiationStatus(selectedTask) !== 'accepted' &&
-                   (selectedTask.status === 'submitted' || selectedTask.status === 'budget_negotiation') && (
+                  {/* Budget Section:
+                      - Show for 'submitted' and 'budget_negotiation'
+                      - If 'submitted' -> always show "Waiting for expert..." row
+                      - If 'budget_negotiation' -> show buttons when pending_student_response
+                  */}
+                  {(selectedTask.status === 'submitted' || selectedTask.status === 'budget_negotiation') && (
                     <div className="bg-blue-50 border border-blue-200 rounded-2xl p-6 mb-6">
                       <h3 className="font-bold text-blue-900 mb-3 text-lg flex items-center gap-2">
                         <i className="ri-money-dollar-circle-line"></i>
@@ -1220,13 +1065,24 @@ export default function ClientDashboard() {
                           </div>
                         )}
                       </div>
+
                       {selectedTask.negotiation_reason && (
                         <div className="bg-white rounded-lg p-4 mb-4">
                           <p className="text-sm text-gray-600 mb-2">Expert's Explanation:</p>
                           <p className="text-gray-800">{selectedTask.negotiation_reason}</p>
                         </div>
                       )}
-                      {normalizedNegotiationStatus(selectedTask) === 'pending_student_response' && (
+
+                      {/* Always show waiting row when status is 'submitted' */}
+                      {selectedTask.status === 'submitted' && (
+                        <div className="flex items-center gap-2 text-orange-600 bg-white rounded-lg p-4">
+                          <i className="ri-time-line text-xl"></i>
+                          <span className="font-medium">Waiting for expert to review your budget...</span>
+                        </div>
+                      )}
+
+                      {/* Negotiation UI when admin has countered */}
+                      {selectedTask.status === 'budget_negotiation' && selectedTask.negotiation_status === 'pending_student_response' && (
                         <div className="flex gap-3">
                           <Button
                             onClick={() => respondToBudgetNegotiation('accept')}
@@ -1253,8 +1109,10 @@ export default function ClientDashboard() {
                           </Button>
                         </div>
                       )}
-                      {normalizedNegotiationStatus(selectedTask) === 'pending_admin_review' && (
-                        <div className="flex items-center gap-2 text-orange-600 bg-white rounded-lg p-4">
+
+                      {/* Safety net: also show waiting row if BE explicitly says 'pending_admin_review' */}
+                      {selectedTask.status === 'budget_negotiation' && selectedTask.negotiation_status === 'pending_admin_review' && (
+                        <div className="flex items-center gap-2 text-orange-600 bg-white rounded-lg p-4 mt-3">
                           <i className="ri-time-line text-xl"></i>
                           <span className="font-medium">Waiting for expert to review your budget...</span>
                         </div>
@@ -1262,9 +1120,8 @@ export default function ClientDashboard() {
                     </div>
                   )}
 
-                  {/* Status Information */}
-                  {selectedTask.status === 'submitted' &&
-                   normalizedNegotiationStatus(selectedTask) === 'pending_admin_review' && (
+                  {/* Status Information — always show this when status is submitted */}
+                  {selectedTask.status === 'submitted' && (
                     <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 mb-6">
                       <div className="flex items-center gap-3">
                         <i className="ri-time-line text-3xl text-amber-600"></i>
@@ -1297,7 +1154,7 @@ export default function ClientDashboard() {
                     </div>
                   )}
 
-                  {/* AWAITING REVIEW – FINAL MOBILE-PERFECT VERSION */}
+                  {/* AWAITING REVIEW */}
                   {selectedTask.status === 'awaiting_review' && (
                     <div className="bg-purple-50 border border-purple-300 rounded-2xl p-5 shadow-md">
                       <div className="text-center mb-5">
@@ -1306,7 +1163,6 @@ export default function ClientDashboard() {
                         <p className="text-xs text-purple-700 mt-1">Expert has submitted final work</p>
                       </div>
 
-                      {/* Expert Files Only – Top Card */}
                       <div className="bg-white rounded-xl p-4 mb-5 border border-purple-100">
                         <h4 className="font-bold text-gray-900 text-sm mb-3 flex items-center gap-2">
                           <i className="ri-download-cloud-2-line text-purple-600"></i>
@@ -1338,7 +1194,6 @@ export default function ClientDashboard() {
                         )}
                       </div>
 
-                      {/* Two Buttons Side-by-Side */}
                       <div className="grid grid-cols-2 gap-3">
                         <Button
                           onClick={approveTask}
@@ -1464,18 +1319,12 @@ export default function ClientDashboard() {
                       <i className="ri-chat-3-line"></i>
                       Communication with {selectedTask.assigned_admin?.full_name || 'Expert'}
                     </h3>
-                    <Button
-                      onClick={refreshChat}
-                      variant="outline"
-                      size="sm"
-                      className="whitespace-nowrap"
-                    >
+                    <Button onClick={refreshChat} variant="outline" size="sm" className="whitespace-nowrap">
                       <i className="ri-refresh-line mr-2"></i>
                       Refresh
                     </Button>
                   </div>
 
-                  {/* Messages */}
                   <div className="bg-gray-50 rounded-2xl border border-gray-200 h-[50vh] md:h-96 flex flex-col">
                     <div className="flex-1 overflow-y-auto p-4 space-y-4">
                       {chatMessages.length === 0 ? (
@@ -1492,10 +1341,7 @@ export default function ClientDashboard() {
                               message.sender?.username === currentUser?.username;
 
                             return (
-                              <div
-                                key={message.id}
-                                className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}
-                              >
+                              <div key={message.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
                                 <div
                                   className={`max-w-xs lg:max-w-md px-4 py-3 rounded-2xl shadow-sm ${
                                     isMine
@@ -1507,11 +1353,7 @@ export default function ClientDashboard() {
 
                                   {message.file_url && (
                                     <div className="mb-2">
-                                      <div
-                                        className={`text-xs p-2 rounded-lg ${
-                                          isMine ? 'bg-white/20' : 'bg-gray-100'
-                                        }`}
-                                      >
+                                      <div className={`text-xs p-2 rounded-lg ${isMine ? 'bg-white/20' : 'bg-gray-100'}`}>
                                         <a
                                           href={makeAbsoluteFileUrl(message.file_url)}
                                           download
@@ -1526,27 +1368,17 @@ export default function ClientDashboard() {
                                     </div>
                                   )}
 
-                                  <p
-                                    className={`text-xs flex items-center gap-1 ${
-                                      isMine ? 'text-blue-100' : 'text-gray-500'
-                                    }`}
-                                  >
+                                  <p className={`text-xs flex items-center gap-1 ${isMine ? 'text-blue-100' : 'text-gray-500'}`}>
                                     <i className="ri-user-line"></i>
-                                    {isMine
-                                      ? 'You'
-                                      : (selectedTask.assigned_admin?.full_name || 'Expert')}
+                                    {isMine ? 'You' : (selectedTask.assigned_admin?.full_name || 'Expert')}
                                     {' • '}
-                                    {new Date(message.created_at).toLocaleTimeString([], {
-                                      hour: '2-digit',
-                                      minute: '2-digit',
-                                    })}
+                                    {new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                   </p>
                                 </div>
                               </div>
                             );
                           })}
 
-                          {/* Typing Indicator */}
                           {isTyping && (
                             <div className="flex justify-start">
                               <div className="bg-gray-100 text-gray-600 px-4 py-2 rounded-2xl">
@@ -1565,7 +1397,6 @@ export default function ClientDashboard() {
                       )}
                     </div>
 
-                    {/* Enhanced Message Input */}
                     <div className="border-t border-gray-200 p-4 bg-white rounded-b-2xl">
                       {uploadedFiles.length > 0 && (
                         <div className="mb-3 flex flex-wrap gap-2">
@@ -1595,11 +1426,7 @@ export default function ClientDashboard() {
                           onChange={handleFileUpload}
                           className="hidden"
                         />
-                        <Button
-                          onClick={() => fileInputRef.current?.click()}
-                          variant="outline"
-                          className="whitespace-nowrap"
-                        >
+                        <Button onClick={() => fileInputRef.current?.click()} variant="outline" className="whitespace-nowrap">
                           <i className="ri-attachment-line"></i>
                         </Button>
                         <Button
@@ -1632,7 +1459,7 @@ export default function ClientDashboard() {
         </div>
       </div>
 
-      {/* Enhanced Create Task Modal - RESIZED */}
+      {/* Create Task Modal */}
       {showCreateTask && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-2xl animate-slide-up max-h-[90vh] overflow-y-auto">
@@ -1645,9 +1472,7 @@ export default function ClientDashboard() {
 
             <form onSubmit={createTask} className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Assignment Title
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Assignment Title</label>
                 <Input
                   value={taskForm.title}
                   onChange={(e) => setTaskForm(prev => ({ ...prev, title: e.target.value }))}
@@ -1659,9 +1484,7 @@ export default function ClientDashboard() {
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Subject
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Subject</label>
                   <select
                     value={taskForm.subject}
                     onChange={(e) => setTaskForm(prev => ({ ...prev, subject: e.target.value }))}
@@ -1683,9 +1506,7 @@ export default function ClientDashboard() {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Education Level
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Education Level</label>
                   <select
                     value={taskForm.education_level}
                     onChange={(e) => setTaskForm(prev => ({ ...prev, education_level: e.target.value }))}
@@ -1703,9 +1524,7 @@ export default function ClientDashboard() {
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Deadline
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Deadline</label>
                   <Input
                     type="datetime-local"
                     value={taskForm.deadline}
@@ -1715,10 +1534,7 @@ export default function ClientDashboard() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    <i className="ri-time-zone-line mr-1"></i>
-                    Your Timezone
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2"><i className="ri-time-zone-line mr-1"></i>Your Timezone</label>
                   <select
                     value={taskForm.timezone}
                     onChange={(e) => setTaskForm(prev => ({ ...prev, timezone: e.target.value }))}
@@ -1733,9 +1549,7 @@ export default function ClientDashboard() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Proposed Budget (USD)
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Proposed Budget (USD)</label>
                 <Input
                   type="number"
                   value={taskForm.budget}
@@ -1750,9 +1564,7 @@ export default function ClientDashboard() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Assignment Description
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Assignment Description</label>
                 <Textarea
                   value={taskForm.description}
                   onChange={(e) => setTaskForm(prev => ({ ...prev, description: e.target.value }))}
@@ -1765,17 +1577,9 @@ export default function ClientDashboard() {
 
               {/* File Upload Section */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Upload Assignment Files
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Upload Assignment Files</label>
                 <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-400 transition-colors">
-                  <input
-                    type="file"
-                    multiple
-                    onChange={handleFileUpload}
-                    className="hidden"
-                    id="task-files"
-                  />
+                  <input type="file" multiple onChange={handleFileUpload} className="hidden" id="task-files" />
                   <label htmlFor="task-files" className="cursor-pointer">
                     <i className="ri-upload-cloud-line text-4xl text-gray-400 mb-3"></i>
                     <p className="text-sm text-gray-600 mb-1">Click to upload files or drag and drop</p>
@@ -1791,11 +1595,7 @@ export default function ClientDashboard() {
                           <span className="text-blue-800 text-sm">{file.name}</span>
                           <span className="text-xs text-blue-600">({(file.size / 1024 / 1024).toFixed(1)} MB)</span>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => removeFile(index)}
-                          className="text-red-600 hover:text-red-800 cursor-pointer text-sm"
-                        >
+                        <button type="button" onClick={() => removeFile(index)} className="text-red-600 hover:text-red-800 cursor-pointer text-sm">
                           <i className="ri-close-line"></i>
                         </button>
                       </div>
@@ -1820,18 +1620,10 @@ export default function ClientDashboard() {
               </div>
 
               <div className="flex gap-3 pt-4">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setShowCreateTask(false)}
-                  className="flex-1 py-2 text-sm whitespace-nowrap"
-                >
+                <Button type="button" variant="outline" onClick={() => setShowCreateTask(false)} className="flex-1 py-2 text-sm whitespace-nowrap">
                   Cancel
                 </Button>
-                <Button
-                  type="submit"
-                  className="flex-1 bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 hover:from-blue-700 hover:via-purple-700 hover:to-indigo-700 text-white py-2 text-sm whitespace-nowrap"
-                >
+                <Button type="submit" className="flex-1 bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 hover:from-blue-700 hover:via-purple-700 hover:to-indigo-700 text-white py-2 text-sm whitespace-nowrap">
                   <i className="ri-send-plane-fill mr-1"></i>
                   Submit Assignment
                 </Button>
@@ -1855,9 +1647,7 @@ export default function ClientDashboard() {
 
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Your Counter-Offer (USD)
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Your Counter-Offer (USD)</label>
                 <Input
                   type="number"
                   value={counterBudget}
@@ -1883,18 +1673,10 @@ export default function ClientDashboard() {
             </div>
 
             <div className="flex gap-3 mt-6">
-              <Button
-                onClick={() => setShowBudgetNegotiation(false)}
-                variant="outline"
-                className="flex-1 whitespace-nowrap"
-              >
+              <Button onClick={() => setShowBudgetNegotiation(false)} variant="outline" className="flex-1 whitespace-nowrap">
                 Cancel
               </Button>
-              <Button
-                onClick={() => respondToBudgetNegotiation('counter')}
-                disabled={!counterBudget}
-                className="flex-1 bg-orange-600 hover:bg-orange-700 text-white whitespace-nowrap"
-              >
+              <Button onClick={() => respondToBudgetNegotiation('counter')} disabled={!counterBudget} className="flex-1 bg-orange-600 hover:bg-orange-700 text-white whitespace-nowrap">
                 Send Counter-Offer
               </Button>
             </div>
@@ -1915,20 +1697,12 @@ export default function ClientDashboard() {
             </div>
 
             <div className="bg-gray-50 rounded-xl p-4 mb-6">
-              <p className="text-sm text-gray-700 mb-2">
-                <strong>Assignment:</strong> {selectedTask.title}
-              </p>
-              <p className="text-sm text-gray-700 mb-2">
-                <strong>Status:</strong> {formatStatus(selectedTask.status)}
-              </p>
-              <p className="text-sm text-gray-700">
-                <strong>Withdrawal Fee:</strong> {selectedTask.can_withdraw_free ? 'Free' : `$${selectedTask.withdrawal_fee}`}
-              </p>
+              <p className="text-sm text-gray-700 mb-2"><strong>Assignment:</strong> {selectedTask.title}</p>
+              <p className="text-sm text-gray-700 mb-2"><strong>Status:</strong> {formatStatus(selectedTask.status)}</p>
+              <p className="text-sm text-gray-700"><strong>Withdrawal Fee:</strong> {selectedTask.can_withdraw_free ? 'Free' : `$${selectedTask.withdrawal_fee}`}</p>
             </div>
             <div className="mb-6">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Reason for Withdrawal (Optional)
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Reason for Withdrawal (Optional)</label>
               <Textarea
                 value={withdrawalReason}
                 onChange={(e) => setWithdrawalReason(e.target.value)}
@@ -1938,17 +1712,10 @@ export default function ClientDashboard() {
               />
             </div>
             <div className="flex gap-3">
-              <Button
-                onClick={() => setShowWithdrawModal(false)}
-                variant="outline"
-                className="flex-1 whitespace-nowrap"
-              >
+              <Button onClick={() => setShowWithdrawModal(false)} variant="outline" className="flex-1 whitespace-nowrap">
                 Cancel
               </Button>
-              <Button
-                onClick={withdrawTask}
-                className="flex-1 bg-red-600 hover:bg-red-700 text-white whitespace-nowrap"
-              >
+              <Button onClick={withdrawTask} className="flex-1 bg-red-600 hover:bg-red-700 text-white whitespace-nowrap">
                 Withdraw Assignment
               </Button>
             </div>
@@ -1968,9 +1735,7 @@ export default function ClientDashboard() {
             </div>
 
             <div className="mb-6">
-              <label className="block text-lg font-bold text-gray-700 mb-3">
-                Revision Feedback
-              </label>
+              <label className="block text-lg font-bold text-gray-700 mb-3">Revision Feedback</label>
               <Textarea
                 value={revisionFeedback}
                 onChange={(e) => setRevisionFeedback(e.target.value)}
@@ -1990,18 +1755,10 @@ export default function ClientDashboard() {
               </div>
             </div>
             <div className="flex gap-3">
-              <Button
-                onClick={() => setShowRevisionModal(false)}
-                variant="outline"
-                className="flex-1 whitespace-nowrap"
-              >
+              <Button onClick={() => setShowRevisionModal(false)} variant="outline" className="flex-1 whitespace-nowrap">
                 Cancel
               </Button>
-              <Button
-                onClick={requestRevision}
-                disabled={!revisionFeedback.trim()}
-                className="flex-1 bg-orange-600 hover:bg-orange-700 text-white whitespace-nowrap"
-              >
+              <Button onClick={requestRevision} disabled={!revisionFeedback.trim()} className="flex-1 bg-orange-600 hover:bg-orange-700 text-white whitespace-nowrap">
                 <i className="ri-send-plane-fill mr-2"></i>
                 Request Revision
               </Button>
@@ -2011,22 +1768,11 @@ export default function ClientDashboard() {
       )}
 
       <style>{`
-        @keyframes fade-in {
-          from { opacity: 0; }
-          to { opacity: 1; }
-        }
-        @keyframes slide-up {
-          from { opacity: 0; transform: translateY(20px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
+        @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes slide-up { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
         .animate-fade-in { animation: fade-in 0.2s ease-out; }
         .animate-slide-up { animation: slide-up 0.3s ease-out; }
-        .line-clamp-2 {
-          display: -webkit-box;
-          -webkit-line-clamp: 2;
-          -webkit-box-orient: vertical;
-          overflow: hidden;
-        }
+        .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
       `}</style>
     </div>
   )
