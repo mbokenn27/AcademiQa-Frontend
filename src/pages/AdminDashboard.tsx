@@ -760,15 +760,15 @@ const downloadFile = async (file: TaskFile) => {
         </div>
       )
     }
-    if (task.status === 'budget_negotiation' && task.negotiation_status === 'pending_student_response') {
-      return (
-        <div className="mb-8 p-6 bg-gradient-to-r from-yellow-50 to-amber-50 border-2 border-yellow-400 rounded-2xl text-center">
-          <i className="ri-hourglass-line text-5xl text-yellow-700 mb-3 block"></i>
-          <p className="text-xl font-bold text-yellow-900">Awaiting Student Response</p>
-          <p className="text-sm text-yellow-800 mt-2">Your counter-offer of <strong>${task.admin_counter_budget}</strong> is pending</p>
-        </div>
-      )
-    }
+    // if (task.status === 'budget_negotiation' && task.negotiation_status === 'pending_student_response') {
+    //   return (
+    //     <div className="mb-8 p-6 bg-gradient-to-r from-yellow-50 to-amber-50 border-2 border-yellow-400 rounded-2xl text-center">
+    //       <i className="ri-hourglass-line text-5xl text-yellow-700 mb-3 block"></i>
+    //       <p className="text-xl font-bold text-yellow-900">Awaiting Student Response</p>
+    //       <p className="text-sm text-yellow-800 mt-2">Your counter-offer of <strong>${task.admin_counter_budget}</strong> is pending</p>
+    //     </div>
+    //   )
+    // }
     if (task.status === 'budget_negotiation' && task.negotiation_status === 'pending_admin_response') {
       return (
         <div className="flex flex-col sm:flex-row gap-3">
