@@ -340,7 +340,7 @@ export default function Landing() {
       </section>
 
       {/* Services Section */}
-      <section className="py-16 px-4 bg-white">
+      <section id="services" className="py-16 px-4 bg-white">
         <div className="max-w-6xl mx-auto text-center">
           <div className="mb-3">
             <span className="text-slate-600 font-light text-sm uppercase tracking-widest">
@@ -369,7 +369,7 @@ export default function Landing() {
             ))}
           </div>
         </div>
-      </section>
+      </>
 
       {/* How It Works Section */}
       <section id="how-it-works" className="py-16 px-4 bg-slate-50">
