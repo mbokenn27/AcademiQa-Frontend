@@ -369,7 +369,7 @@ export default function Landing() {
             ))}
           </div>
         </div>
-      </>
+      </section>
 
       {/* How It Works Section */}
       <section id="how-it-works" className="py-16 px-4 bg-slate-50">
