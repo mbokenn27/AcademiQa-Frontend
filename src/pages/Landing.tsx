@@ -40,37 +40,37 @@ export default function Landing() {
     { 
       icon: "ri-graduation-cap-line", 
       title: "Thesis & Dissertation", 
-      desc: "Comprehensive support for Masters and PhD research projects",
+      desc: "Research Proposal, Masters and PhD Research Thesis",
       color: "from-blue-500 to-cyan-500"
     },
     { 
       icon: "ri-code-s-slash-line", 
       title: "Programming & Tech", 
-      desc: "Python, Java, ML projects, data structures, and algorithm design",
+      desc: "Python, Java, ML projects, Data Structures, R Studio, SQL, Algorithm Design",
       color: "from-purple-500 to-pink-500"
     },
     { 
       icon: "ri-calculator-line", 
       title: "Mathematics & Stats", 
-      desc: "Advanced calculus, statistical analysis, econometrics, and modeling",
+      desc: "Calculus, Algebra, Data Science, Statistical Analysis",
       color: "from-emerald-500 to-teal-500"
     },
     { 
       icon: "ri-microscope-line", 
       title: "Science & Engineering", 
-      desc: "Lab reports, research papers, and technical documentation",
+      desc: "Nursing, Healthcare, Lab Reports, Research Papers",
       color: "from-orange-500 to-red-500"
     },
     { 
       icon: "ri-bar-chart-box-line", 
       title: "Business & Economics", 
-      desc: "Case studies, financial analysis, market research, and business plans",
+      desc: "Accounting, Finance, Marketing, Business Plans, Investment Options, Product Market Research",
       color: "from-indigo-500 to-purple-500"
     },
     { 
       icon: "ri-article-line", 
       title: "Writing & Editing", 
-      desc: "Academic editing, proofreading, and publication support",
+      desc: "Document Formatting, Plagiarism and AI Check, Referencing, Editing",
       color: "from-green-500 to-emerald-500"
     },
   ];
