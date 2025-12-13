@@ -595,7 +595,7 @@ export default function Landing() {
                 {[
                   { icon: "ri-mail-line", title: "Email", desc: "ad.academiqa@gmail.com", sub: "Typically replies within 30 minutes" },
                   { icon: "ri-chat-3-line", title: "Live Chat", desc: "Available 24/7", sub: "Instant connection with our team" },
-                  { icon: "ri-phone-line", title: "Phone Support", desc: "+1 (555) 123-ACAD", sub: "24/7" },
+                  { icon: "ri-phone-line", title: "Phone Support", desc: "+1 (646) 624-3746/+1 (646) 718-0938", sub: "24/7" },
                 ].map((item, index) => (
                   <div key={index} className="flex items-center gap-3">
                     <div className="w-10 h-10 bg-white/20 rounded-lg flex items-center justify-center flex-shrink-0">
