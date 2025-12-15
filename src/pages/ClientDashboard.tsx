@@ -80,8 +80,8 @@ const useWebSocketWithReconnect = (url: string | null, onMessage: (data: any) =>
         }
       };
 
-      websocket.onclose = () => {
-        console.log('WebSocket disconnected — reconnecting...');
+      websocket.onclose = (ev) => {
+        console.log('WebSocket disconnected — reconnecting...', ev.code, ev.reason);
         setWs(null);
         const delay = Math.min(1000 * (2 ** attempt), 30000);
         attempt++;
@@ -171,6 +171,41 @@ const timezones = [
   { value: 'Australia/Sydney', label: 'Australian Eastern Time (AET)' }
 ]
 
+// === File icon helper (prevents ReferenceError) ===
+const getFileIcon = (type?: string) => {
+  const t = (type || '').toLowerCase();
+  switch (t) {
+    case 'pdf': return 'ri-file-pdf-line';
+    case 'word':
+    case 'docx':
+    case 'doc': return 'ri-file-word-line';
+    case 'excel':
+    case 'xlsx':
+    case 'xls': return 'ri-file-excel-line';
+    case 'powerpoint':
+    case 'pptx':
+    case 'ppt': return 'ri-file-ppt-line';
+    case 'python':
+    case 'py':
+    case 'js':
+    case 'ts':
+    case 'json':
+    case 'html':
+    case 'css': return 'ri-file-code-line';
+    case 'csv': return 'ri-file-chart-line';
+    case 'png':
+    case 'jpg':
+    case 'jpeg':
+    case 'gif':
+    case 'bmp':
+    case 'webp': return 'ri-image-line';
+    case 'zip':
+    case 'rar':
+    case '7z': return 'ri-file-zip-line';
+    default: return 'ri-file-line';
+  }
+};
+
 export default function ClientDashboard() {
   const navigate = useNavigate()
   const { logout } = useAuth()
@@ -223,7 +258,7 @@ export default function ClientDashboard() {
       ));
 
       if (selectedTask && selectedTask.id === data.task.id) {
-        setSelectedTask(prev => ({ ...prev, ...data.task }));
+        setSelectedTask((prev: any) => ({ ...prev, ...data.task }));
       }
 
       showToast("Task Updated", "Task has been updated in real-time");
@@ -235,9 +270,9 @@ export default function ClientDashboard() {
     }
   });
 
-  // Task-specific WebSocket - reinitialize when selectedTask changes
+  // Task-specific WebSocket - only for REAL tasks (not optimistic temp-ids)
   const { sendMessage: sendTaskMessage } = useWebSocketWithReconnect(
-    selectedTask ? `/ws/task/${selectedTask.id}/` : null,
+    selectedTask && !selectedTask?.__optimistic ? `/ws/task/${selectedTask.id}/` : null,
     (data) => {
       console.log('Task WebSocket message:', data);
 
@@ -254,7 +289,7 @@ export default function ClientDashboard() {
 
             const matchPendingFile =
               m.id > 1000000 &&
-              m.file_url === 'pending' &&
+              (m as any).file_url === 'pending' &&
               !!data.message.file_url;
 
             if (matchByText || matchPendingFile) {
@@ -283,11 +318,11 @@ export default function ClientDashboard() {
           task.id === data.task.id ? { ...task, ...data.task } : task
         ));
         if (selectedTask && selectedTask.id === data.task.id) {
-          setSelectedTask(prev => ({ ...prev, ...data.task }));
+          setSelectedTask((prev: any) => ({ ...prev, ...data.task }));
         }
       }
     },
-    [selectedTask?.id]
+    [selectedTask?.id, selectedTask?.__optimistic]
   );
 
   // Load initial data
@@ -295,12 +330,12 @@ export default function ClientDashboard() {
     loadInitialData()
   }, [])
 
-  // Load chat messages when selected task changes
+  // Load chat messages when selected task changes (only if real task)
   useEffect(() => {
-    if (selectedTask) {
+    if (selectedTask && !selectedTask.__optimistic) {
       loadChatMessages(selectedTask.id);
     }
-  }, [selectedTask?.id])
+  }, [selectedTask?.id, selectedTask?.__optimistic])
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -339,7 +374,7 @@ export default function ClientDashboard() {
   }
 
   const handleTyping = (typing: boolean) => {
-    if (selectedTask && sendTaskMessage) {
+    if (selectedTask && sendTaskMessage && !selectedTask.__optimistic) {
       sendTaskMessage({ type: 'typing', is_typing: typing });
     }
   };
@@ -367,7 +402,7 @@ export default function ClientDashboard() {
 
   const sendMessage = async () => {
     if (!newMessage.trim() && uploadedFiles.length === 0) return;
-    if (!selectedTask) return;
+    if (!selectedTask || selectedTask.__optimistic) return;
 
     let optimisticId: number | null = null;
 
@@ -412,7 +447,7 @@ export default function ClientDashboard() {
   };
 
   const refreshChat = () => {
-    if (selectedTask) {
+    if (selectedTask && !selectedTask.__optimistic) {
       loadChatMessages(selectedTask.id);
       showToast("Chat Refreshed", "Chat messages have been refreshed");
     }
@@ -433,8 +468,9 @@ export default function ClientDashboard() {
     uploadedFiles.forEach((file) => formData.append('file', file));
 
     const tempId = Date.now();
-    const optimisticTask = {
+    const optimisticTask: any = {
       id: tempId,
+      __optimistic: true, // <-- mark as optimistic to avoid WS/chat until real id comes back
       title: taskForm.title,
       description: taskForm.description,
       subject: taskForm.subject,
@@ -456,7 +492,7 @@ export default function ClientDashboard() {
     try {
       const newTask = await apiService.postFormData<any>('/tasks/', formData);
       setTasks(prev => prev.map(t => (t.id === tempId ? newTask : t)));
-      setSelectedTask(newTask);
+      setSelectedTask(newTask); // now it has a real id; WS/chat will connect
       showToast("Success", "Task submitted successfully!");
     } catch (error: any) {
       setTasks(prev => prev.filter(t => t.id !== tempId));
@@ -618,7 +654,7 @@ export default function ClientDashboard() {
     return `${API_ROOT}${path}`;
   };
 
-  const downloadFile = async (file: { id: number; name?: string; file_url?: string }) => {
+  const downloadFile = async (file: { id: number; name?: string; file_url?: string; file_type?: string }) => {
     try {
       if (file.file_url) {
         const href = makeAbsoluteFileUrl(file.file_url);
@@ -1042,11 +1078,7 @@ export default function ClientDashboard() {
                     </span>
                   </div>
 
-                  {/* Budget Section:
-                      - Show for 'submitted' and 'budget_negotiation'
-                      - If 'submitted' -> always show "Waiting for expert..." row
-                      - If 'budget_negotiation' -> show buttons when pending_student_response
-                  */}
+                  {/* Budget Section */}
                   {(selectedTask.status === 'submitted' || selectedTask.status === 'budget_negotiation') && (
                     <div className="bg-blue-50 border border-blue-200 rounded-2xl p-6 mb-6">
                       <h3 className="font-bold text-blue-900 mb-3 text-lg flex items-center gap-2">
@@ -1073,7 +1105,6 @@ export default function ClientDashboard() {
                         </div>
                       )}
 
-                      {/* Always show waiting row when status is 'submitted' */}
                       {selectedTask.status === 'submitted' && (
                         <div className="flex items-center gap-2 text-orange-600 bg-white rounded-lg p-4">
                           <i className="ri-time-line text-xl"></i>
@@ -1081,7 +1112,6 @@ export default function ClientDashboard() {
                         </div>
                       )}
 
-                      {/* Negotiation UI when admin has countered */}
                       {selectedTask.status === 'budget_negotiation' && selectedTask.negotiation_status === 'pending_student_response' && (
                         <div className="flex gap-3">
                           <Button
@@ -1110,7 +1140,6 @@ export default function ClientDashboard() {
                         </div>
                       )}
 
-                      {/* Safety net: also show waiting row if BE explicitly says 'pending_admin_review' */}
                       {selectedTask.status === 'budget_negotiation' && selectedTask.negotiation_status === 'pending_admin_review' && (
                         <div className="flex items-center gap-2 text-orange-600 bg-white rounded-lg p-4 mt-3">
                           <i className="ri-time-line text-xl"></i>
@@ -1120,7 +1149,7 @@ export default function ClientDashboard() {
                     </div>
                   )}
 
-                  {/* Status Information — always show this when status is submitted */}
+                  {/* Status Information — submitted */}
                   {selectedTask.status === 'submitted' && (
                     <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 mb-6">
                       <div className="flex items-center gap-3">
@@ -1262,7 +1291,7 @@ export default function ClientDashboard() {
                       {selectedTask.files?.map((file: any) => (
                         <div key={file.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors">
                           <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
-                            <i className={`${getFileIcon(file.file_type)} text-blue-600`}></i>
+                            <i className={`${getFileIcon(file.file_type || file.name?.split('.').pop())} text-blue-600`}></i>
                           </div>
                           <div className="flex-1 min-w-0">
                             <p className="font-medium text-gray-900 truncate">{file.name}</p>
