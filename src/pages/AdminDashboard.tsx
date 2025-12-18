@@ -58,9 +58,52 @@ const Toast = ({ title, description, variant }: { title: string; description: st
   );
 };
 
-/* ==============
-   WebSocket Hook
-   ============== */
+/* ============== Helpers ============== */
+// Normalize/defend against undefined arrays & counts from API/WS (prevents `.length` crashes)
+const normalizeTask = (t: Partial<Task>): Task => ({
+  id: t.id as number,
+  task_id: t.task_id ?? '',
+  title: t.title ?? '',
+  description: t.description ?? '',
+  subject: t.subject ?? '',
+  education_level: t.education_level ?? '',
+  deadline: t.deadline ?? new Date().toISOString(),
+  status: (t.status as Task['status']) ?? 'submitted',
+  priority: (t.priority as Task['priority']) ?? 'medium',
+  progress: typeof t.progress === 'number' ? t.progress : 0,
+  budget: t.budget,
+  proposed_budget: typeof t.proposed_budget === 'number' ? t.proposed_budget : 0,
+  admin_counter_budget: t.admin_counter_budget,
+  negotiation_status: (t.negotiation_status as Task['negotiation_status']) ?? 'pending_admin_review',
+  negotiation_reason: t.negotiation_reason ?? '',
+  estimated_hours: typeof t.estimated_hours === 'number' ? t.estimated_hours : 0,
+  actual_hours: t.actual_hours,
+  timezone_str: t.timezone_str ?? '',
+  client: t.client as User, // backend must supply
+  assigned_admin: t.assigned_admin as User | undefined,
+  category: t.category,
+  timezone_obj: t.timezone_obj,
+  files: (t.files ?? []) as TaskFile[],
+  revisions: (t.revisions ?? []) as Revision[],
+  chat: (t.chat ?? []) as ChatMessage[],
+  unread_messages: typeof t.unread_messages === 'number' ? t.unread_messages : 0,
+  days_until_deadline: typeof t.days_until_deadline === 'number' ? t.days_until_deadline : 0,
+  is_overdue: !!t.is_overdue,
+  created_at: t.created_at ?? new Date().toISOString(),
+  updated_at: t.updated_at ?? new Date().toISOString(),
+  accepted_at: t.accepted_at,
+  completed_at: t.completed_at,
+  withdrawal_deadline: t.withdrawal_deadline,
+  withdrawal_fee: typeof t.withdrawal_fee === 'number' ? t.withdrawal_fee : 0,
+  can_withdraw_free: !!t.can_withdraw_free,
+  reject_reason: t.reject_reason ?? ''
+});
+
+// Strip undefined keys from partial WS payloads before merging (avoid clobbering arrays with undefined)
+const stripUndefined = <T extends object>(obj: T): Partial<T> =>
+  Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>;
+
+/* ============== WebSocket Hook ============== */
 const useWebSocketWithReconnect = (url: string | null, onMessage: (data: any) => void, deps: any[] = []) => {
   const [ws, setWs] = useState<WebSocket | null>(null);
   useEffect(() => {
@@ -214,13 +257,17 @@ export default function AdminDashboard() {
   /* ======= WebSockets ======= */
   const { sendMessage: _sendAdminMessage } = useWebSocketWithReconnect('/ws/admin/', (data) => {
     if (data.type === 'task_updated' && data.task) {
-      const updated: Task = data.task;
-      setTasks(prev => prev.map(t => t.id === updated.id ? updated : t));
-      setSelectedTask(prev => (prev && prev.id === updated.id) ? { ...updated } : prev);
-      loadStats();
+      const partial = stripUndefined(data.task as Partial<Task>);
+      setTasks(prev =>
+        prev.map(t => (t.id === partial.id ? normalizeTask({ ...t, ...partial }) : t))
+      );
+      setSelectedTask(prev =>
+        prev && prev.id === partial.id ? normalizeTask({ ...prev, ...partial }) : prev
+      );
+      loadStats().catch(() => {});
     }
     if (data.type === 'task_created' && data.task) {
-      const newTask: Task = data.task;
+      const newTask = normalizeTask(data.task);
       setTasks(cur => cur.some(t => t.id === newTask.id) ? cur : [newTask, ...cur]);
       showToast('New Task', `Task #${newTask.id} created`);
     }
@@ -251,7 +298,7 @@ export default function AdminDashboard() {
         }
       }
       if (data.type === 'user_typing') {
-        if (data.username !== currentUser?.username) setIsTyping(data.is_typing);
+        if (data.username !== currentUser?.username) setIsTyping(!!data.is_typing);
       }
     },
     [selectedTask?.id, showChatWindow, currentUser?.username]
@@ -267,9 +314,12 @@ export default function AdminDashboard() {
       setLoading(true);
       const user = await apiService.get<User>('/auth/user/');
       setCurrentUser(user);
-      const list = await apiService.get<Task[]>('/tasks/');
+
+      const rawList = await apiService.get<Partial<Task>[]>('/tasks/');
+      const list = rawList.map(normalizeTask);
       setTasks(list);
       if (list.length) setSelectedTask(list[0]);
+
       await loadStats();
       showToast('Dashboard Loaded', 'Your dashboard has been loaded successfully');
     } catch (e) {
@@ -280,15 +330,16 @@ export default function AdminDashboard() {
 
   const loadStats = async () => {
     try {
-      const s = await apiService.get<{ task_stats: TaskStats; admin_stats: AdminStats }>('/admin/stats/');
-      setTaskStats(s.task_stats); setAdminStats(s.admin_stats);
+      const s = await apiService.get<{ task_stats?: TaskStats; admin_stats?: AdminStats }>('/admin/stats/');
+      setTaskStats(s.task_stats ?? { total: 0, new_requests: 0, active: 0, under_review: 0, completed: 0, recent: 0 });
+      setAdminStats(s.admin_stats ?? { assigned_tasks: 0, completed_tasks: 0, total_earnings: 0, rating: 0 });
     } catch (e) { console.error(e); }
   };
 
   const loadChat = async (taskId: number) => {
     try {
       const msgs = await apiService.get<ChatMessage[]>(`/tasks/${taskId}/chat/`);
-      setChatMessages(msgs);
+      setChatMessages(Array.isArray(msgs) ? msgs : []);
       setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
       // on load, mark-read
       try { await apiService.post(`/tasks/${taskId}/mark-read/`); } catch {}
@@ -399,16 +450,28 @@ export default function AdminDashboard() {
   const acceptBudget = async (taskId: number) => {
     const task = tasks.find(t => t.id === taskId); if (!task) return;
     const agreed = task.proposed_budget || task.admin_counter_budget || task.budget;
-    const optimistic: Task = { ...task, budget: agreed, negotiation_status: 'accepted', status: 'in_progress' };
+    const optimistic: Task = normalizeTask({ ...task, budget: agreed, negotiation_status: 'accepted', status: 'in_progress' });
     setTasks(prev => prev.map(t => t.id === taskId ? optimistic : t));
     setSelectedTask(prev => (prev && prev.id === taskId ? optimistic : prev));
     try { await apiService.post(`/admin/tasks/${taskId}/accept-budget/`); showToast('Budget Accepted', 'Work will begin shortly. Student has been notified via email.'); }
-    catch (e) { console.error(e); setTasks(prev => prev.map(t => t.id === taskId ? task : t)); setSelectedTask(prev => (prev && prev.id === taskId ? task : prev)); showToast('Error', 'Failed to accept budget', 'destructive'); }
+    catch (e) {
+      console.error(e);
+      // revert
+      setTasks(prev => prev.map(t => t.id === taskId ? task : t));
+      setSelectedTask(prev => (prev && prev.id === taskId ? task : prev));
+      showToast('Error', 'Failed to accept budget', 'destructive');
+    }
   };
   const proposeBudget = async () => {
     if (!selectedTask || !counterBudget || !negotiationReason.trim()) return;
     const newAmt = parseFloat(counterBudget);
-    const optimistic: Task = { ...selectedTask, status: 'budget_negotiation', negotiation_status: 'pending_student_response', admin_counter_budget: newAmt, negotiation_reason: negotiationReason.trim() };
+    const optimistic: Task = normalizeTask({
+      ...selectedTask,
+      status: 'budget_negotiation',
+      negotiation_status: 'pending_student_response',
+      admin_counter_budget: newAmt,
+      negotiation_reason: negotiationReason.trim()
+    });
     setTasks(prev => prev.map(t => t.id === selectedTask.id ? optimistic : t));
     setSelectedTask(optimistic);
     try {
@@ -445,7 +508,7 @@ export default function AdminDashboard() {
     } catch (e) { console.error(e); showToast('Error', 'Failed to update progress', 'destructive'); }
   };
 
-  // Authenticated file download (kept from your version)
+  // Authenticated file download
   const downloadFile = async (file: TaskFile) => {
     try {
       const token = localStorage.getItem('access_token');
@@ -471,7 +534,10 @@ export default function AdminDashboard() {
   const filteredTasks = tasks.filter(task => {
     const matchesStatus = filterStatus === 'all' || task.status === filterStatus;
     const q = searchQuery.toLowerCase();
-    const matchesSearch = task.title.toLowerCase().includes(q) || task.subject.toLowerCase().includes(q) || task.client.full_name.toLowerCase().includes(q);
+    const title = (task.title ?? '').toLowerCase();
+    const subject = (task.subject ?? '').toLowerCase();
+    const clientName = (task.client?.full_name ?? '').toLowerCase();
+    const matchesSearch = title.includes(q) || subject.includes(q) || clientName.includes(q);
     return matchesStatus && matchesSearch;
   });
 
@@ -520,7 +586,7 @@ export default function AdminDashboard() {
     }
   };
   const getFileIcon = (type: string) => {
-    switch (type.toLowerCase()) {
+    switch ((type || '').toLowerCase()) {
       case 'pdf': return 'ri-file-pdf-line';
       case 'word': case 'docx': case 'doc': return 'ri-file-word-line';
       case 'excel': case 'xlsx': case 'xls': return 'ri-file-excel-line';
@@ -538,7 +604,7 @@ export default function AdminDashboard() {
         <div className="mb-4 p-4 bg-gradient-to-r from-purple-50 to-indigo-50 border-2 border-purple-300 rounded-2xl text-center">
           <i className="ri-time-line text-4xl text-purple-700 mb-2 block animate-pulse"></i>
           <p className="text-lg font-bold text-purple-900">Waiting for Student Approval</p>
-          <p className="text-sm text-purple-700 mt-1">{task.revisions.length > 0 ? "Your revised work has been submitted." : "Your final assignment has been submitted."}</p>
+          <p className="text-sm text-purple-700 mt-1">{(task.revisions?.length ?? 0) > 0 ? "Your revised work has been submitted." : "Your final assignment has been submitted."}</p>
         </div>
       );
     }
@@ -694,7 +760,7 @@ export default function AdminDashboard() {
                               </div>
                               <div className="min-w-0">
                                 <div className="font-medium text-sm text-gray-900 truncate">{task.title}</div>
-                                <div className="text-xs text-gray-600 truncate">New message from {task.client.full_name}</div>
+                                <div className="text-xs text-gray-600 truncate">New message from {task.client?.full_name ?? 'Student'}</div>
                               </div>
                             </button>
                           ))
@@ -721,7 +787,7 @@ export default function AdminDashboard() {
           md:grid-cols-[220px_1fr_300px]
           lg:grid-cols-[220px_1fr_340px]
         ">
-          {/* Left nav (lightweight) */}
+          {/* Left nav */}
           <aside className="bg-white/80 backdrop-blur border border-gray-200 rounded-2xl p-4 space-y-1">
             <div className="text-xs text-gray-500 px-2 mb-1">Navigation</div>
             {[
@@ -749,7 +815,7 @@ export default function AdminDashboard() {
             </div>
           </aside>
 
-          {/* Middle: details (no static chat; button opens floating window) */}
+          {/* Middle: details */}
           <section className="bg-white border border-gray-200 rounded-2xl p-6 overflow-hidden flex flex-col min-h-0">
             {!selectedTask ? (
               <div className="flex-1 grid place-items-center text-gray-500">Select a task from the right list</div>
@@ -841,16 +907,16 @@ export default function AdminDashboard() {
                 <div className="bg-white rounded-xl p-4 mb-4 border">
                   <h3 className="font-semibold mb-3">Student Information</h3>
                   <div className="flex flex-wrap items-center gap-3 sm:gap-4">
-                    {selectedTask.client.profile?.avatar && (
+                    {selectedTask.client?.profile?.avatar && (
                       <img src={selectedTask.client.profile.avatar} alt={selectedTask.client.full_name} className="w-12 h-12 rounded-full object-cover object-top border-2 border-emerald-200" />
                     )}
                     <div className="flex-1 min-w-[180px]">
-                      <p className="font-semibold">{selectedTask.client.full_name}</p>
-                      <p className="text-sm text-gray-600 break-all">{selectedTask.client.email}</p>
+                      <p className="font-semibold">{selectedTask.client?.full_name ?? 'Student'}</p>
+                      <p className="text-sm text-gray-600 break-all">{selectedTask.client?.email ?? ''}</p>
                     </div>
                     <Button
                       variant="outline"
-                      onClick={() => openGmailCompose(selectedTask.client.email, `Regarding your task: ${selectedTask.title}`)}
+                      onClick={() => selectedTask.client?.email && openGmailCompose(selectedTask.client.email, `Regarding your task: ${selectedTask.title}`)}
                       className="h-10 px-3 text-sm whitespace-nowrap w-full sm:w-auto"
                     >
                       <i className="ri-mail-line mr-2"></i>Contact
@@ -860,20 +926,30 @@ export default function AdminDashboard() {
 
                 {/* Files */}
                 <div className="bg-white rounded-xl p-4 mb-6 border">
-                  <h3 className="font-semibold mb-3">Project Files ({selectedTask.files.length})</h3>
+                  <h3 className="font-semibold mb-3">Project Files ({selectedTask.files?.length ?? 0})</h3>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {selectedTask.files.map((file) => (
-                      <div key={file.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border">
-                        <div className="w-10 h-10 bg-emerald-100 rounded-lg flex items-center justify-center">
+                    {(selectedTask.files ?? []).map((file) => (
+                      <div
+                        key={file.id}
+                        className="flex flex-wrap items-center gap-3 p-3 bg-gray-50 rounded-xl border"
+                      >
+                        <div className="w-10 h-10 bg-emerald-100 rounded-lg flex items-center justify-center shrink-0">
                           <i className={`${getFileIcon(file.file_type)} text-emerald-600`}></i>
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="font-medium text-gray-900 truncate">{file.name}</p>
                           <p className="text-xs text-gray-500">{file.size} • {file.uploaded_by_name}</p>
                         </div>
-                        <Button size="sm" variant="outline" className="h-9 px-2" onClick={() => downloadFile(file)}>
-                          <i className="ri-download-line"></i>
-                        </Button>
+                        <div className="ml-auto shrink-0">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-9 px-2 w-full sm:w-auto"
+                            onClick={() => downloadFile(file)}
+                          >
+                            <i className="ri-download-line"></i>
+                          </Button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -945,7 +1021,7 @@ export default function AdminDashboard() {
                     </div>
                     <p className="text-xs text-gray-600 mb-2 line-clamp-2">{task.description}</p>
                     <div className="flex items-center justify-between text-[11px] text-gray-500">
-                      <span className="flex items-center gap-1"><i className="ri-user-line"></i>{task.client.full_name}</span>
+                      <span className="flex items-center gap-1"><i className="ri-user-line"></i>{task.client?.full_name ?? 'Student'}</span>
                       <span className="flex items-center gap-1"><i className="ri-calendar-line"></i>{new Date(task.deadline).toLocaleDateString()}</span>
                     </div>
                     <div className="flex items-center justify-between text-[11px] mt-1">
@@ -958,9 +1034,9 @@ export default function AdminDashboard() {
                         <span className="flex items-center gap-1 text-orange-600 font-semibold"><i className="ri-money-dollar-circle-line"></i>Proposed: ${task.proposed_budget}</span>
                       )}
                     </div>
-                    {task.revisions.length > 0 && (
+                    {(task.revisions?.length ?? 0) > 0 && (
                       <div className="mt-1 flex items-center gap-1 text-[11px] text-orange-600">
-                        <i className="ri-edit-line"></i>{task.revisions.length} revision{task.revisions.length > 1 ? 's' : ''}
+                        <i className="ri-edit-line"></i>{(task.revisions?.length ?? 0)} revision{(task.revisions?.length ?? 0) > 1 ? 's' : ''}
                       </div>
                     )}
                   </div>
@@ -1029,7 +1105,7 @@ export default function AdminDashboard() {
                             </div>
                           )}
                           <p className={`text-[10px] flex items-center gap-1 ${message.sender_role === 'admin' ? 'text-emerald-100' : 'text-gray-500'}`}>
-                            <i className="ri-user-line"></i>{message.sender_role === 'admin' ? 'You' : selectedTask.client.full_name} • {new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            <i className="ri-user-line"></i>{message.sender_role === 'admin' ? 'You' : selectedTask.client?.full_name ?? 'Student'} • {new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                           </p>
                         </div>
                       </div>
@@ -1082,7 +1158,7 @@ export default function AdminDashboard() {
         </>
       )}
 
-      {/* Modals (same patterns as before) */}
+      {/* Modals */}
       {showBudgetNegotiation && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="bg-white rounded-3xl max-w-2xl w-full p-8 shadow-2xl animate-slide-up">
