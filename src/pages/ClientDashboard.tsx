@@ -1,163 +1,177 @@
-import { useState, useEffect, useRef } from 'react'
+// src/pages/ClientDashboard.tsx
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { useAuth } from '@/contexts/AuthContext'
 
-// Simple toast hook replacement
-const useToast = () => {
-  const [toast, setToast] = useState<{ title: string; description: string; variant?: string } | null>(null)
-  const showToast = (title: string, description: string, variant?: string) => {
-    setToast({ title, description, variant })
-    setTimeout(() => setToast(null), 3000)
-  }
-  return { toast: showToast }
-}
+/* =========================
+   Env-aware HTTP & WS bases
+   ========================= */
+const API_ROOT = (import.meta.env.VITE_API_BASE || window.location.origin).replace(/\/+$/, '');
+const API_BASE = /\/api\/?$/.test(API_ROOT) ? API_ROOT : `${API_ROOT}/api`;
 
-// Toast Component
+const apiService = {
+  url(endpoint: string) {
+    const clean = endpoint.replace(/^\/+/, '');
+    const noApiDup = clean.replace(/^api\/?/, '');
+    return `${API_BASE}/${noApiDup}`;
+  },
+  async get<T>(endpoint: string): Promise<T> {
+    const token = localStorage.getItem('access_token');
+    const res = await fetch(this.url(endpoint), {
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    return res.json();
+  },
+  async post<T = any>(endpoint: string, data?: any): Promise<T> {
+    const token = localStorage.getItem('access_token');
+    const res = await fetch(this.url(endpoint), {
+      method: 'POST',
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' },
+      body: data == null ? undefined : JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    return res.json();
+  },
+  async postFormData<T>(endpoint: string, formData: FormData): Promise<T> {
+    const token = localStorage.getItem('access_token');
+    const res = await fetch(this.url(endpoint), {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      body: formData,
+    });
+    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    return res.json();
+  },
+};
+
+/* ======================
+   Toast (same pattern)
+   ====================== */
 const Toast = ({ title, description, variant }: { title: string; description: string; variant?: string }) => {
-  const bgColor = variant === 'destructive' ? 'bg-red-500' : 'bg-green-500'
+  const bg = variant === 'destructive' ? 'bg-red-500' : 'bg-purple-600';
   return (
-    <div
-      className={`
-        fixed top-4 right-4
-        ${bgColor}
-        text-white p-4 rounded-lg shadow-lg
-        z-[9999] pointer-events-none
-        max-w-sm
-      `}
-    >
+    <div className={`fixed top-4 right-4 ${bg} text-white p-4 rounded-lg shadow-lg z-50 max-w-sm`}>
       <div className="font-bold">{title}</div>
       <div className="text-sm">{description}</div>
     </div>
-  )
+  );
+};
+
+/* ============== Types & helpers ============== */
+interface UserProfile { avatar?: string; full_name?: string; role?: 'client'|'admin' }
+interface User { id: number; username: string; email: string; full_name?: string; profile?: UserProfile; timezone?: string }
+
+interface TaskFile { id: number; name: string; file_type?: string; size?: string; uploaded_by?: any; uploaded_by_name?: string; uploaded_by_role?: 'client'|'admin'; file_url?: string }
+interface Revision { id: number; requested_at: string; feedback: string; status: 'requested'|'in_progress'|'completed'|'cancelled'; completed_at?: string }
+interface ChatMessage { id: number; message: string; file_url?: string; file_name?: string; created_at: string; is_read: boolean; sender?: any; sender_role?: 'client'|'admin'; sender_username?: string }
+
+type NegotiationStatus = 'pending_admin_review' | 'pending_student_response' | 'accepted' | 'rejected'
+type TaskStatus =
+  | 'submitted' | 'budget_negotiation' | 'in_progress'
+  | 'awaiting_review' | 'revision_requested'
+  | 'completed' | 'withdrawn' | 'rejected' | 'cancelled' | 'budget_rejected'
+
+interface Task {
+  id: number;
+  task_id?: string;
+  title: string;
+  description: string;
+  subject: string;
+  education_level: string;
+  deadline: string;
+  timezone_str?: string;
+  status: TaskStatus;
+  priority?: 'low'|'medium'|'high'|'urgent';
+  progress?: number;
+  proposed_budget?: number;
+  admin_counter_budget?: number;
+  budget?: number;
+  negotiation_status?: NegotiationStatus;
+  negotiation_reason?: string;
+  files: TaskFile[];
+  revisions: Revision[];
+  chat?: ChatMessage[];
+  assigned_admin?: { full_name?: string };
+  can_withdraw_free?: boolean;
+  withdrawal_fee?: number;
+  withdrawal_deadline?: string;
 }
 
-// WebSocket Hook with JWT Token Authentication
+const normalizeTask = (t: Partial<Task>): Task => ({
+  id: t.id as number,
+  task_id: t.task_id ?? '',
+  title: t.title ?? '',
+  description: t.description ?? '',
+  subject: t.subject ?? '',
+  education_level: t.education_level ?? '',
+  deadline: t.deadline ?? new Date().toISOString(),
+  timezone_str: t.timezone_str ?? '',
+  status: (t.status as TaskStatus) ?? 'submitted',
+  priority: (t.priority as Task['priority']) ?? 'medium',
+  progress: typeof t.progress === 'number' ? t.progress : 0,
+  proposed_budget: typeof t.proposed_budget === 'number' ? t.proposed_budget : 0,
+  admin_counter_budget: t.admin_counter_budget,
+  budget: t.budget,
+  negotiation_status: (t.negotiation_status as NegotiationStatus) ?? 'pending_admin_review',
+  negotiation_reason: t.negotiation_reason ?? '',
+  files: Array.isArray(t.files) ? t.files : [],
+  revisions: Array.isArray(t.revisions) ? t.revisions : [],
+  chat: Array.isArray(t.chat) ? t.chat : [],
+  assigned_admin: t.assigned_admin ?? {},
+  can_withdraw_free: !!t.can_withdraw_free,
+  withdrawal_fee: typeof t.withdrawal_fee === 'number' ? t.withdrawal_fee : 0,
+  withdrawal_deadline: t.withdrawal_deadline
+});
+
+const stripUndefined = <T extends object>(obj: T): Partial<T> =>
+  Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>;
+
+/* ============== WebSocket Hook ============== */
 const useWebSocketWithReconnect = (url: string | null, onMessage: (data: any) => void, deps: any[] = []) => {
   const [ws, setWs] = useState<WebSocket | null>(null);
-
   useEffect(() => {
-    if (!url) {
-      setWs(null);
-      return;
-    }
-
-    let reconnectTimeout: NodeJS.Timeout;
+    if (!url) { setWs(null); return; }
+    let reconnect: ReturnType<typeof setTimeout>;
     let attempt = 0;
+    let socket: WebSocket | null = null;
 
     const connect = () => {
       const token = localStorage.getItem('access_token');
-      if (!token) {
-        console.warn('No access token — cannot connect to WebSocket');
-        return;
-      }
-
+      if (!token) { console.warn('No token for WS'); return; }
       const ENV_WS_BASE =
         (import.meta as any).env?.VITE_WS_BASE ||
         `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
-
       const base = ENV_WS_BASE.replace(/\/$/, '');
       const path = url.startsWith('/') ? url : `/${url}`;
       const wsUrl = `${base}${path}?token=${encodeURIComponent(token)}`;
-      console.log("[WS] connecting →", wsUrl);
+      socket = new WebSocket(wsUrl);
 
-      const websocket = new WebSocket(wsUrl);
-
-      websocket.onopen = () => {
-        console.log('WebSocket connected:', wsUrl);
-        setWs(websocket);
-        attempt = 0;
-      };
-
-      websocket.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          onMessage(data);
-        } catch (error) {
-          console.error('WebSocket parse error:', error);
-        }
-      };
-
-      websocket.onclose = (ev) => {
-        console.log('WebSocket disconnected — reconnecting...', ev.code, ev.reason);
+      socket.onopen = () => { setWs(socket!); attempt = 0; };
+      socket.onmessage = (e) => { try { onMessage(JSON.parse(e.data)); } catch (err) { console.error('WS parse', err); } };
+      socket.onclose = () => {
         setWs(null);
-        const delay = Math.min(1000 * (2 ** attempt), 30000);
-        attempt++;
-        reconnectTimeout = setTimeout(connect, delay);
+        const delay = Math.min(1000 * 2 ** attempt, 30000);
+        attempt += 1;
+        reconnect = setTimeout(connect, delay);
       };
-
-      websocket.onerror = () => {
-        console.error('WebSocket error');
-      };
+      socket.onerror = () => console.error('WS error');
     };
 
     connect();
-
-    return () => {
-      clearTimeout(reconnectTimeout);
-      if (ws?.readyState === WebSocket.OPEN) ws.close();
-    };
+    return () => { clearTimeout(reconnect); try { socket?.close(); } catch {} };
   }, [url, ...deps]);
 
-  const sendMessage = (data: any) => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(data));
-    }
-  };
-
+  const sendMessage = (data: any) => { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data)); };
   return { sendMessage };
 };
 
-// === HTTP BASES (put this just above apiService) ===
-const API_ROOT = (import.meta.env.VITE_API_BASE || 'http://localhost:8000').replace(/\/+$/, '');
-const API_BASE = /\/api\/?$/.test(API_ROOT) ? API_ROOT : `${API_ROOT}/api`;
-
-// API service functions
-const apiService = {
-  async get<T>(endpoint: string): Promise<T> {
-    const token = localStorage.getItem('access_token');
-    const url = `${API_BASE}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
-    const response = await fetch(url, {
-      headers: {
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-        'Content-Type': 'application/json',
-      },
-    });
-    if (!response.ok) throw new Error(`API error: ${response.status}`);
-    return response.json();
-  },
-
-  async post<T>(endpoint: string, data?: any): Promise<T> {
-    const token = localStorage.getItem('access_token');
-    const url = `${API_BASE}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-        'Content-Type': 'application/json',
-      },
-      body: data == null ? undefined : JSON.stringify(data),
-    });
-    if (!response.ok) throw new Error(`API error: ${response.status}`);
-    return response.json();
-  },
-
-  async postFormData<T>(endpoint: string, formData: FormData): Promise<T> {
-    const token = localStorage.getItem('access_token');
-    const url = `${API_BASE}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: token ? { 'Authorization': `Bearer ${token}` } : undefined, // let browser set boundary
-      body: formData,
-    });
-    if (!response.ok) throw new Error(`API error: ${response.status}`);
-    return response.json();
-  },
-};
-
-// Timezone options
+/* ==========
+   Utilities
+   ========== */
 const timezones = [
   { value: 'America/New_York', label: 'Eastern Time (ET)' },
   { value: 'America/Chicago', label: 'Central Time (CT)' },
@@ -169,70 +183,112 @@ const timezones = [
   { value: 'Asia/Shanghai', label: 'China Standard Time (CST)' },
   { value: 'Asia/Kolkata', label: 'India Standard Time (IST)' },
   { value: 'Australia/Sydney', label: 'Australian Eastern Time (AET)' }
-]
+];
 
-// === File icon helper (prevents ReferenceError) ===
 const getFileIcon = (type?: string) => {
   const t = (type || '').toLowerCase();
   switch (t) {
     case 'pdf': return 'ri-file-pdf-line';
-    case 'word':
-    case 'docx':
-    case 'doc': return 'ri-file-word-line';
-    case 'excel':
-    case 'xlsx':
-    case 'xls': return 'ri-file-excel-line';
-    case 'powerpoint':
-    case 'pptx':
-    case 'ppt': return 'ri-file-ppt-line';
-    case 'python':
-    case 'py':
-    case 'js':
-    case 'ts':
-    case 'json':
-    case 'html':
-    case 'css': return 'ri-file-code-line';
+    case 'word': case 'docx': case 'doc': return 'ri-file-word-line';
+    case 'excel': case 'xlsx': case 'xls': return 'ri-file-excel-line';
+    case 'powerpoint': case 'pptx': case 'ppt': return 'ri-file-ppt-line';
+    case 'python': case 'py': case 'js': case 'ts': case 'json': case 'html': case 'css': return 'ri-file-code-line';
     case 'csv': return 'ri-file-chart-line';
-    case 'png':
-    case 'jpg':
-    case 'jpeg':
-    case 'gif':
-    case 'bmp':
-    case 'webp': return 'ri-image-line';
-    case 'zip':
-    case 'rar':
-    case '7z': return 'ri-file-zip-line';
+    case 'png': case 'jpg': case 'jpeg': case 'gif': case 'bmp': case 'webp': return 'ri-image-line';
+    case 'zip': case 'rar': case '7z': return 'ri-file-zip-line';
     default: return 'ri-file-line';
   }
 };
 
-export default function ClientDashboard() {
-  const navigate = useNavigate()
-  const { logout } = useAuth()
-  const { toast } = useToast()
-  const [currentToast, setCurrentToast] = useState<{ title: string; description: string; variant?: string } | null>(null)
-  const [currentUser, setCurrentUser] = useState<any>(null)
-  const [tasks, setTasks] = useState<any[]>([])
-  const [selectedTask, setSelectedTask] = useState<any>(null)
-  const [showCreateTask, setShowCreateTask] = useState(false)
-  const [showWithdrawModal, setShowWithdrawModal] = useState(false)
-  const [showRevisionModal, setShowRevisionModal] = useState(false)
-  const [showBudgetNegotiation, setShowBudgetNegotiation] = useState(false)
-  const [chatMessages, setChatMessages] = useState<any[]>([])
-  const [newMessage, setNewMessage] = useState('')
-  const [filterStatus, setFilterStatus] = useState('all')
-  const [searchQuery, setSearchQuery] = useState('')
-  const [revisionFeedback, setRevisionFeedback] = useState('')
-  const [counterBudget, setCounterBudget] = useState('')
-  const [withdrawalReason, setWithdrawalReason] = useState('')
-  const [uploadedFiles, setUploadedFiles] = useState<File[]>([])
-  const [loading, setLoading] = useState(true)
-  const [isTyping, setIsTyping] = useState(false)
-  const chatEndRef = useRef<HTMLDivElement>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const typingTimeoutRef = useRef<NodeJS.Timeout>()
+const formatStatus = (s: TaskStatus) => {
+  const map: Record<string, string> = {
+    budget_negotiation: 'Budget Negotiation',
+    revision_requested: 'Revision Requested',
+    budget_rejected: 'Budget Rejected'
+  };
+  return map[s] || s.split('_').map(w => w[0]?.toUpperCase() + w.slice(1)).join(' ');
+};
+const getStatusIcon = (s: TaskStatus) => {
+  switch (s) {
+    case 'submitted': return 'ri-file-text-line';
+    case 'budget_negotiation': return 'ri-money-dollar-circle-line';
+    case 'in_progress': return 'ri-loader-4-line';
+    case 'awaiting_review': return 'ri-eye-line';
+    case 'revision_requested': return 'ri-edit-line';
+    case 'completed': return 'ri-checkbox-circle-line';
+    case 'withdrawn': return 'ri-close-circle-line';
+    case 'budget_rejected': return 'ri-close-circle-line';
+    default: return 'ri-file-line';
+  }
+};
+const getStatusColor = (s: TaskStatus) => {
+  switch (s) {
+    case 'submitted': return 'bg-amber-100 text-amber-800 border-amber-200';
+    case 'budget_negotiation': return 'bg-orange-100 text-orange-800 border-orange-200';
+    case 'in_progress': return 'bg-blue-100 text-blue-800 border-blue-200';
+    case 'awaiting_review': return 'bg-purple-100 text-purple-800 border-purple-200';
+    case 'revision_requested': return 'bg-indigo-100 text-indigo-800 border-indigo-200';
+    case 'completed': return 'bg-emerald-100 text-emerald-800 border-emerald-200';
+    case 'withdrawn': return 'bg-gray-100 text-gray-800 border-gray-200';
+    case 'budget_rejected': return 'bg-red-100 text-red-800 border-red-200';
+    default: return 'bg-gray-100 text-gray-800 border-gray-200';
+  }
+};
 
-  // Create task form state
+const openGmailCompose = (toEmail: string, subject?: string, body?: string) => {
+  const url = `https://mail.google.com/mail/?view=cm&fs=1&tf=1&to=${encodeURIComponent(toEmail)}${subject ? `&su=${encodeURIComponent(subject)}` : ''}${body ? `&body=${encodeURIComponent(body)}` : ''}`;
+  window.open(url, '_blank', 'noopener,noreferrer');
+};
+
+/* =======================
+   Component starts here
+   ======================= */
+export default function ClientDashboard() {
+  const navigate = useNavigate();
+  const { logout } = useAuth();
+
+  const [currentToast, setCurrentToast] = useState<{ title: string; description: string; variant?: string } | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+
+  const [filterStatus, setFilterStatus] = useState<'all' | TaskStatus>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const [showCreateTask, setShowCreateTask] = useState(false);
+  const [showWithdrawModal, setShowWithdrawModal] = useState(false);
+  const [showRevisionModal, setShowRevisionModal] = useState(false);
+  const [showBudgetNegotiation, setShowBudgetNegotiation] = useState(false);
+
+  const [revisionFeedback, setRevisionFeedback] = useState('');
+  const [counterBudget, setCounterBudget] = useState('');
+  const [withdrawalReason, setWithdrawalReason] = useState('');
+
+  // chat (floating window)
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
+  const [isTyping, setIsTyping] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const typingTimeoutRef = useRef<NodeJS.Timeout>();
+  const [showChatWindow, setShowChatWindow] = useState(false);
+  const [chatMinimized, setChatMinimized] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  // floating chat position/size
+  const chatRef = useRef<HTMLDivElement>(null);
+  const [chatPos, setChatPos] = useState<{ x: number, y: number }>({ x: 16, y: 100 });
+  const [chatSize] = useState<{ w: number, h: number }>({ w: 360, h: 520 });
+  const draggingRef = useRef<{ startX: number, startY: number, origX: number, origY: number } | null>(null);
+
+  // create task form (with dropdowns restored)
+  const SUBJECT_OPTIONS = [
+    'Mathematics','Physics','Chemistry','Biology','Computer Science','English Literature','History','Economics','Psychology','Environmental Science','Other'
+  ];
+  const LEVEL_OPTIONS = ['High School','Undergraduate','Graduate','PhD'];
+
   const [taskForm, setTaskForm] = useState({
     title: '',
     description: '',
@@ -241,1254 +297,702 @@ export default function ClientDashboard() {
     deadline: '',
     timezone: 'America/New_York',
     budget: ''
-  })
-
-  const showToast = (title: string, description: string, variant?: string) => {
-    setCurrentToast({ title, description, variant })
-    setTimeout(() => setCurrentToast(null), 3000)
-  }
-
-  // WebSocket for client dashboard updates
-  useWebSocketWithReconnect('/ws/client/', (data) => {
-    console.log('Client WebSocket message:', data);
-
-    if (data.type === 'task_updated' && data.task) {
-      setTasks(prev => prev.map(task =>
-        task.id === data.task.id ? { ...task, ...data.task } : task
-      ));
-
-      if (selectedTask && selectedTask.id === data.task.id) {
-        setSelectedTask((prev: any) => ({ ...prev, ...data.task }));
-      }
-
-      showToast("Task Updated", "Task has been updated in real-time");
-    }
-
-    if (data.type === 'task_created' && data.task) {
-      setTasks(prev => [data.task, ...prev]);
-      showToast("New Task", "New task has been created successfully");
-    }
   });
 
-  // Task-specific WebSocket - only for REAL tasks (not optimistic temp-ids)
-  const { sendMessage: sendTaskMessage } = useWebSocketWithReconnect(
-    selectedTask && !selectedTask?.__optimistic ? `/ws/task/${selectedTask.id}/` : null,
-    (data) => {
-      console.log('Task WebSocket message:', data);
+  const showToast = (title: string, description: string, variant?: string) => {
+    setCurrentToast({ title, description, variant });
+    setTimeout(() => setCurrentToast(null), 3000);
+  };
 
+  /* ======= WebSockets ======= */
+  useWebSocketWithReconnect('/ws/client/', (data) => {
+    if (data.type === 'task_updated' && data.task) {
+      const partial = stripUndefined(normalizeTask(data.task));
+      setTasks(prev => prev.map(t => (t.id === partial.id ? normalizeTask({ ...t, ...partial }) : t)));
+      setSelectedTask(prev => (prev && prev.id === partial.id ? normalizeTask({ ...prev, ...partial }) : prev));
+      showToast('Task Updated', 'Updates received in real-time');
+    }
+    if (data.type === 'task_created' && data.task) {
+      const newTask = normalizeTask(data.task);
+      setTasks(cur => cur.some(t => t.id === newTask.id) ? cur : [newTask, ...cur]);
+      showToast('New Task', 'Your assignment was created successfully');
+    }
+  }, []);
+
+  const { sendMessage: sendTaskMessage } = useWebSocketWithReconnect(
+    selectedTask ? `/ws/task/${selectedTask.id}/` : null,
+    (data) => {
       if (data.type === 'chat_message' && data.message) {
         setChatMessages(prev => {
-          if (prev.some(m => m.id === data.message.id)) return prev;
-
-          let changed = false;
-          const next = prev.map(m => {
-            const matchByText =
-              m.id > 1000000 &&
-              !!data.message.message &&
-              m.message === data.message.message;
-
-            const matchPendingFile =
-              m.id > 1000000 &&
-              (m as any).file_url === 'pending' &&
-              !!data.message.file_url;
-
-            if (matchByText || matchPendingFile) {
-              changed = true;
-              return data.message;
-            }
-            return m;
-          });
-
-          return changed ? next : [...prev, data.message];
+          const filtered = prev.filter(msg => !(msg.id > 1000000 && msg.message === data.message.message));
+          return [...filtered, data.message];
         });
-
-        setTimeout(() => {
-          chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-        }, 100);
+        setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 80);
       }
-
-      if (data.type === 'user_typing') {
-        if (data.username !== currentUser?.username) {
-          setIsTyping(data.is_typing);
-        }
-      }
-
+      if (data.type === 'user_typing') setIsTyping(!!data.is_typing);
       if (data.type === 'task_updated' && data.task) {
-        setTasks(prev => prev.map(task =>
-          task.id === data.task.id ? { ...task, ...data.task } : task
-        ));
-        if (selectedTask && selectedTask.id === data.task.id) {
-          setSelectedTask((prev: any) => ({ ...prev, ...data.task }));
-        }
+        const partial = stripUndefined(normalizeTask(data.task));
+        setTasks(prev => prev.map(t => (t.id === partial.id ? normalizeTask({ ...t, ...partial }) : t)));
+        setSelectedTask(prev => (prev && prev.id === partial.id ? normalizeTask({ ...prev, ...partial }) : prev));
       }
     },
-    [selectedTask?.id, selectedTask?.__optimistic]
+    [selectedTask?.id]
   );
 
-  // Load initial data
+  /* ======= Data ======= */
+  useEffect(() => { loadInitial(); }, []);
+  useEffect(() => { if (selectedTask) loadChat(selectedTask.id); }, [selectedTask?.id]);
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMessages]);
   useEffect(() => {
-    loadInitialData()
-  }, [])
+    const h = chatSize.h;
+    setChatPos({ x: 16, y: Math.max(16, window.innerHeight - h - 16) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Load chat messages when selected task changes (only if real task)
-  useEffect(() => {
-    if (selectedTask && !selectedTask.__optimistic) {
-      loadChatMessages(selectedTask.id);
-    }
-  }, [selectedTask?.id, selectedTask?.__optimistic])
-
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [chatMessages])
-
-  const loadInitialData = async () => {
-    try {
-      setLoading(true)
-      const userData = await apiService.get<any>('/auth/user/')
-      setCurrentUser(userData)
-
-      const tasksData = await apiService.get<any[]>('/tasks/')
-      setTasks(tasksData)
-      if (tasksData.length > 0) setSelectedTask(tasksData[0])
-
-      showToast("Dashboard Loaded", "Your dashboard has been loaded successfully")
-    } catch (error) {
-      console.error('Failed to load data:', error)
-      showToast("Error", "Failed to load dashboard data", "destructive")
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const loadChatMessages = async (taskId: number) => {
-    try {
-      const messages = await apiService.get<any[]>(`/tasks/${taskId}/chat/`)
-      setChatMessages(messages)
-      setTimeout(() => {
-        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-      }, 100);
-    } catch (error) {
-      console.error('Failed to load chat messages:', error)
-      showToast("Error", "Failed to load chat messages", "destructive")
-    }
-  }
-
-  const handleTyping = (typing: boolean) => {
-    if (selectedTask && sendTaskMessage && !selectedTask.__optimistic) {
-      sendTaskMessage({ type: 'typing', is_typing: typing });
-    }
-  };
-
-  const handleMessageInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setNewMessage(e.target.value);
-
-    if (!isTyping) {
-      setIsTyping(true);
-      handleTyping(true);
-    }
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    typingTimeoutRef.current = setTimeout(() => {
-      setIsTyping(false);
-      handleTyping(false);
-    }, 1000);
-  };
-
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      if (newMessage.trim()) sendMessage()
-    }
-  }
-
-  const sendMessage = async () => {
-    if (!newMessage.trim() && uploadedFiles.length === 0) return;
-    if (!selectedTask || selectedTask.__optimistic) return;
-
-    let optimisticId: number | null = null;
-
-    try {
-      setIsTyping(false);
-      handleTyping(false);
-      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-
-      const optimisticMessage = {
-        id: Date.now(),
-        message: newMessage.trim(),
-        sender: currentUser?.username || 'You',
-        sender_role: 'client',
-        created_at: new Date().toISOString(),
-        is_read: false,
-        ...(uploadedFiles.length > 0
-          ? { file_url: 'pending', file_name: uploadedFiles[0]?.name }
-          : {}),
-      };
-      optimisticId = optimisticMessage.id;
-      setChatMessages(prev => [...prev, optimisticMessage]);
-      setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
-
-      let saved: any;
-      if (uploadedFiles.length > 0) {
-        const formData = new FormData();
-        if (newMessage.trim()) formData.append('message', newMessage.trim());
-        uploadedFiles.forEach(file => formData.append('file', file));
-        saved = await apiService.postFormData<any>(`/tasks/${selectedTask.id}/chat/`, formData);
-      } else {
-        saved = await apiService.post<any>(`/tasks/${selectedTask.id}/chat/`, { message: newMessage.trim() });
-      }
-
-      setChatMessages(prev => prev.map(m => (m.id === optimisticId ? saved : m)));
-      setNewMessage('');
-      setUploadedFiles([]);
-    } catch (error: any) {
-      if (optimisticId !== null) setChatMessages(prev => prev.filter(m => m.id !== optimisticId));
-      console.error('Failed to send message:', error);
-      showToast("Error", "Failed to send message: " + error.message, "destructive");
-    }
-  };
-
-  const refreshChat = () => {
-    if (selectedTask && !selectedTask.__optimistic) {
-      loadChatMessages(selectedTask.id);
-      showToast("Chat Refreshed", "Chat messages have been refreshed");
-    }
-  };
-
-  const createTask = async (e: React.FormEvent) => {
-    e.preventDefault();
-    showToast("Submitting…", "We're creating your assignment now.");
-
-    const formData = new FormData();
-    formData.append('title', taskForm.title);
-    formData.append('description', taskForm.description);
-    formData.append('subject', taskForm.subject);
-    formData.append('education_level', taskForm.education_level);
-    formData.append('deadline', taskForm.deadline);
-    formData.append('timezone_str', taskForm.timezone);
-    formData.append('proposed_budget', taskForm.budget);
-    uploadedFiles.forEach((file) => formData.append('file', file));
-
-    const tempId = Date.now();
-    const optimisticTask: any = {
-      id: tempId,
-      __optimistic: true, // <-- mark as optimistic to avoid WS/chat until real id comes back
-      title: taskForm.title,
-      description: taskForm.description,
-      subject: taskForm.subject,
-      education_level: taskForm.education_level,
-      deadline: taskForm.deadline,
-      timezone_str: taskForm.timezone,
-      proposed_budget: taskForm.budget,
-      status: 'submitted',
-      negotiation_status: 'pending_admin_review',
-      files: [],
-      revisions: [],
-      chat: [],
-    };
-
-    setTasks(prev => [optimisticTask, ...prev]);
-    setSelectedTask(optimisticTask);
-    setShowCreateTask(false);
-
-    try {
-      const newTask = await apiService.postFormData<any>('/tasks/', formData);
-      setTasks(prev => prev.map(t => (t.id === tempId ? newTask : t)));
-      setSelectedTask(newTask); // now it has a real id; WS/chat will connect
-      showToast("Success", "Task submitted successfully!");
-    } catch (error: any) {
-      setTasks(prev => prev.filter(t => t.id !== tempId));
-      if (selectedTask?.id === tempId) setSelectedTask(null);
-      showToast("Error", "Failed: " + (error.message || "Please try again"), "destructive");
-      setShowCreateTask(true);
-    } finally {
-      setTaskForm({
-        title: '',
-        description: '',
-        subject: '',
-        education_level: '',
-        deadline: '',
-        timezone: 'America/New_York',
-        budget: ''
-      });
-      setUploadedFiles([]);
-    }
-  };
-
-  const withdrawTask = async () => {
-    if (!selectedTask) return
-    try {
-      const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/withdraw/`, {
-        reason: withdrawalReason
-      });
-
-      setTasks(prev => prev.map(task =>
-        task.id === selectedTask.id
-          ? { ...task, status: result.task.status, withdrawal_reason: result.task.withdrawal_reason }
-          : task
-      ))
-
-      setSelectedTask(prev => prev ? { ...prev, status: result.task.status, withdrawal_reason: result.task.withdrawal_reason } : null)
-
-      setShowWithdrawModal(false)
-      setWithdrawalReason('')
-      showToast("Success", result.message)
-    } catch (error: any) {
-      console.error('Failed to withdraw task:', error)
-      showToast("Error", "Failed to withdraw task: " + error.message, "destructive")
-    }
-  }
-
-  const respondToBudgetNegotiation = async (action: 'accept' | 'counter' | 'reject') => {
-    if (!selectedTask) return
-    try {
-      if (action === 'accept') {
-        const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/accept-budget/`);
-        setTasks(prev => prev.map(task =>
-          task.id === selectedTask.id
-            ? { ...task, budget: result.task.budget, negotiation_status: result.task.negotiation_status, status: result.task.status, admin_counter_budget: undefined, negotiation_reason: undefined }
-            : task
-        ))
-        setSelectedTask(prev => prev ? { ...prev, budget: result.task.budget, negotiation_status: result.task.negotiation_status, status: result.task.status, admin_counter_budget: undefined, negotiation_reason: undefined } : null)
-        setShowBudgetNegotiation(false)
-        setCounterBudget('')
-        showToast("Success", result.message)
-      } else if (action === 'counter') {
-        if (!counterBudget || counterBudget.trim() === '') {
-          showToast("Error", "Please enter a counter budget amount.", "destructive");
-          return;
-        }
-        const counterAmount = parseFloat(counterBudget);
-        if (isNaN(counterAmount) || counterAmount <= 0) {
-          showToast("Error", "Please enter a valid budget amount (greater than 0).", "destructive");
-          return;
-        }
-        const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/counter-budget/`, { amount: counterAmount });
-        setTasks(prev => prev.map(task =>
-          task.id === selectedTask.id
-            ? { ...task, proposed_budget: result.task.proposed_budget, negotiation_status: result.task.negotiation_status, status: result.task.status }
-            : task
-        ))
-        setSelectedTask(prev => prev ? { ...prev, proposed_budget: result.task.proposed_budget, negotiation_status: result.task.negotiation_status, status: result.task.status } : null)
-        setShowBudgetNegotiation(false)
-        setCounterBudget('')
-        showToast("Success", result.message)
-      } else if (action === 'reject') {
-        const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask.id}/reject-budget/`);
-        setTasks(prev => prev.map(task =>
-          task.id === selectedTask.id
-            ? { ...task, negotiation_status: result.task.negotiation_status, status: result.task.status }
-            : task
-        ))
-        setSelectedTask(prev => prev ? { ...prev, negotiation_status: result.task.negotiation_status, status: result.task.status } : null)
-        setShowBudgetNegotiation(false)
-        setCounterBudget('')
-        showToast("Info", result.message)
-      }
-    } catch (error: any) {
-      console.error('Failed to respond to budget negotiation:', error)
-      showToast("Error", "Failed to process your request: " + error.message, "destructive")
-    }
-  }
-
-  const approveTask = async () => {
-    if (!window.confirm("Approve and complete this assignment?")) return;
+  const loadInitial = async () => {
     try {
       setLoading(true);
-      const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask!.id}/approve/`);
-      setTasks(prev => prev.map(task =>
-        task.id === selectedTask!.id ? { ...task, status: result.task.status } : task
-      ));
-      setSelectedTask(prev => prev ? { ...prev, status: result.task.status } : null);
-      showToast("Success", result.message);
-    } catch (err: any) {
-      console.error('Failed to approve task:', err);
-      showToast("Error", "Failed to approve task: " + err.message, "destructive");
-    } finally {
-      setLoading(false);
+      const user = await apiService.get<User>('/auth/user/');
+      setCurrentUser(user);
+      const rawList = await apiService.get<Partial<Task>[]>('/tasks/');
+      const list = rawList.map(normalizeTask);
+      setTasks(list);
+      if (list.length) setSelectedTask(list[0]);
+      showToast('Dashboard Loaded', 'Welcome back!');
+    } catch (e) {
+      console.error(e);
+      showToast('Error', 'Failed to load dashboard data', 'destructive');
+    } finally { setLoading(false); }
+  };
+
+  const loadChat = async (taskId: number) => {
+    try {
+      const msgs = await apiService.get<ChatMessage[]>(`/tasks/${taskId}/chat/`);
+      setChatMessages(Array.isArray(msgs) ? msgs : []);
+      setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 80);
+    } catch (e) {
+      console.error(e); showToast('Error', 'Failed to load chat messages', 'destructive');
     }
   };
+
+  /* ======= Chat behaviors ======= */
+  const onDragStart = (e: React.MouseEvent) => {
+    draggingRef.current = { startX: e.clientX, startY: e.clientY, origX: chatPos.x, origY: chatPos.y };
+    window.addEventListener('mousemove', onDragMove);
+    window.addEventListener('mouseup', onDragEnd);
+  };
+  const onDragMove = (e: MouseEvent) => {
+    if (!draggingRef.current) return;
+    const dx = e.clientX - draggingRef.current.startX;
+    const dy = e.clientY - draggingRef.current.startY;
+    setChatPos({ x: Math.max(8, draggingRef.current.origX + dx), y: Math.max(8, draggingRef.current.origY + dy) });
+  };
+  const onDragEnd = () => {
+    draggingRef.current = null;
+    window.removeEventListener('mousemove', onDragMove);
+    window.removeEventListener('mouseup', onDragEnd);
+  };
+
+  const openChatWindow = () => { if (selectedTask) { setShowChatWindow(true); setChatMinimized(false); } };
+  const closeChatWindow = () => { setShowChatWindow(false); setChatMinimized(false); };
+
+  const handleTyping = (typing: boolean) => { if (selectedTask) sendTaskMessage({ type: 'typing', is_typing: typing }); };
+  const handleMessageInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setNewMessage(e.target.value);
+    if (!isTyping) { setIsTyping(true); handleTyping(true); }
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => { setIsTyping(false); handleTyping(false); }, 1000);
+  };
+  const handleKeyPress = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
 
   const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
   const MAX_FILES = 10;
-
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-
     setUploadedFiles(prev => {
-      const remainingSlots = MAX_FILES - prev.length;
+      const remaining = MAX_FILES - prev.length;
       const accepted: File[] = [];
-      let tooMany = false;
-      let tooLargeFiles: string[] = [];
-
-      for (const file of files) {
-        if (accepted.length >= remainingSlots) {
-          tooMany = true;
-          break;
-        }
-        if (file.size > MAX_FILE_SIZE) {
-          tooLargeFiles.push(file.name);
-          continue;
-        }
-        accepted.push(file);
+      let tooMany = false, tooLarge: string[] = [];
+      for (const f of files) {
+        if (accepted.length >= remaining) { tooMany = true; break; }
+        if (f.size > MAX_FILE_SIZE) { tooLarge.push(f.name); continue; }
+        accepted.push(f);
       }
-
-      if (tooLargeFiles.length > 0) {
-        showToast("File too large", `${tooLargeFiles.join(', ')} exceed(s) 10 MB and was not added.`, "destructive");
-      }
-      if (tooMany) {
-        showToast("File limit reached", `You can attach up to ${MAX_FILES} files per assignment.`, "destructive");
-      }
+      if (tooLarge.length) showToast('File too large', `${tooLarge.join(', ')} exceed(s) 10 MB.`, 'destructive');
+      if (tooMany) showToast('File limit reached', `Max ${MAX_FILES} files.`, 'destructive');
       return [...prev, ...accepted];
     });
-
-    e.target.value = "";
+    e.target.value = '';
   };
+  const removeFile = (i: number) => setUploadedFiles(prev => prev.filter((_, idx) => idx !== i));
 
-  const removeFile = (index: number) => {
-    setUploadedFiles(prev => prev.filter((_, i) => i !== index))
-  }
-
-  const makeAbsoluteFileUrl = (u: string) => {
+  const makeAbsoluteFileUrl = (u?: string) => {
     if (!u) return u;
     if (/^https?:\/\//i.test(u)) return u;
     const path = u.startsWith('/') ? u : `/${u}`;
     return `${API_ROOT}${path}`;
   };
-
   const downloadFile = async (file: { id: number; name?: string; file_url?: string; file_type?: string }) => {
     try {
-      if (file.file_url) {
-        const href = makeAbsoluteFileUrl(file.file_url);
-        window.open(href, '_blank');
-        return;
-      }
+      if (file.file_url) { window.open(makeAbsoluteFileUrl(file.file_url), '_blank'); return; }
       const token = localStorage.getItem('access_token');
-      const res = await fetch(`${API_BASE}/files/${file.id}/download/`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
+      const res = await fetch(apiService.url(`/files/${file.id}/download/`), { headers: token ? { Authorization: `Bearer ${token}` } : {} });
       if (!res.ok) throw new Error('Download failed');
+      const blob = await res.blob(); const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = file.name || 'download';
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    } catch (e) { console.error(e); showToast('Error', 'Failed to download file', 'destructive'); }
+  };
 
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = file.name || 'download';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error('Failed to download file:', error);
-      showToast("Error", "Failed to download file. Please try again.", "destructive");
+  const sendMessage = async () => {
+    if (!newMessage.trim() && uploadedFiles.length === 0) return;
+    if (!selectedTask) return;
+
+    const optimistic: ChatMessage = {
+      id: Date.now(),
+      message: newMessage.trim(),
+      sender_role: 'client',
+      created_at: new Date().toISOString(),
+      is_read: false,
+      file_url: uploadedFiles.length ? 'pending' : undefined,
+      file_name: uploadedFiles.length ? uploadedFiles[0]?.name : undefined
+    };
+
+    try {
+      setIsTyping(false); handleTyping(false); if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      setChatMessages(prev => [...prev, optimistic]);
+      setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 60);
+
+      if (uploadedFiles.length) {
+        const form = new FormData();
+        if (newMessage.trim()) form.append('message', newMessage.trim());
+        uploadedFiles.forEach(f => form.append('file', f));
+        await apiService.postFormData(`/tasks/${selectedTask.id}/chat/`, form);
+      } else {
+        await apiService.post(`/tasks/${selectedTask.id}/chat/`, { message: newMessage.trim() });
+      }
+
+      setNewMessage(''); setUploadedFiles([]);
+      setTimeout(() => loadChat(selectedTask.id), 350);
+    } catch (e) {
+      console.error('send fail', e);
+      setChatMessages(prev => prev.filter(m => m.id !== optimistic.id));
+      showToast('Error', 'Failed to send message', 'destructive');
     }
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'submitted': return 'bg-amber-100 text-amber-800 border-amber-200'
-      case 'budget_negotiation': return 'bg-orange-100 text-orange-800 border-orange-200'
-      case 'in_progress': return 'bg-blue-100 text-blue-800 border-blue-200'
-      case 'awaiting_review': return 'bg-purple-100 text-purple-800 border-purple-200'
-      case 'revision_requested': return 'bg-indigo-100 text-indigo-800 border-indigo-200'
-      case 'completed': return 'bg-emerald-100 text-emerald-800 border-emerald-200'
-      case 'withdrawn': return 'bg-gray-100 text-gray-800 border-gray-200'
-      case 'budget_rejected': return 'bg-red-100 text-red-800 border-red-200'
-      default: return 'bg-gray-100 text-gray-800 border-gray-200'
+  /* ======= Task actions ======= */
+  const respondToBudgetNegotiation = async (action: 'accept' | 'counter' | 'reject') => {
+    if (!selectedTask) return;
+    try {
+      if (action === 'accept') {
+        const result = await apiService.post<{task: Task; message: string}>(`/tasks/${selectedTask.id}/accept-budget/`);
+        const upd = normalizeTask(result.task);
+        setTasks(prev => prev.map(t => t.id === upd.id ? upd : t));
+        setSelectedTask(upd); showToast('Success', result.message);
+      } else if (action === 'counter') {
+        const n = parseFloat(counterBudget);
+        if (isNaN(n) || n <= 0) { showToast('Error', 'Enter a valid amount', 'destructive'); return; }
+        const result = await apiService.post<{task: Task; message: string}>(`/tasks/${selectedTask.id}/counter-budget/`, { amount: n });
+        const upd = normalizeTask(result.task);
+        setTasks(prev => prev.map(t => t.id === upd.id ? upd : t));
+        setSelectedTask(upd); setShowBudgetNegotiation(false); setCounterBudget(''); showToast('Success', result.message);
+      } else {
+        const result = await apiService.post<{task: Task; message: string}>(`/tasks/${selectedTask.id}/reject-budget/`);
+        const upd = normalizeTask(result.task);
+        setTasks(prev => prev.map(t => t.id === upd.id ? upd : t));
+        setSelectedTask(upd); showToast('Info', result.message);
+      }
+    } catch (e: any) {
+      console.error(e); showToast('Error', 'Failed to process your request', 'destructive');
     }
-  }
+  };
 
-  const formatStatus = (status: string) => {
-    const statusMap: any = {
-      'budget_negotiation': 'Budget Negotiation',
-      'revision_requested': 'Revision Requested',
-      'budget_rejected': 'Budget Rejected'
+  const withdrawTask = async () => {
+    if (!selectedTask) return;
+    try {
+      const result = await apiService.post<{task: Task; message: string}>(`/tasks/${selectedTask.id}/withdraw/`, { reason: withdrawalReason });
+      const upd = normalizeTask(result.task);
+      setTasks(prev => prev.map(t => t.id === upd.id ? upd : t));
+      setSelectedTask(upd); setShowWithdrawModal(false); setWithdrawalReason(''); showToast('Success', result.message);
+    } catch (e: any) {
+      console.error(e); showToast('Error', 'Failed to withdraw task', 'destructive');
     }
-    return statusMap[status] || status.split('_').map(word =>
-      word.charAt(0).toUpperCase() + word.slice(1)
-    ).join(' ')
-  }
+  };
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'submitted': return 'ri-file-text-line'
-      case 'budget_negotiation': return 'ri-money-dollar-circle-line'
-      case 'in_progress': return 'ri-loader-4-line'
-      case 'awaiting_review': return 'ri-eye-line'
-      case 'revision_requested': return 'ri-edit-line'
-      case 'completed': return 'ri-checkbox-circle-line'
-      case 'withdrawn': return 'ri-close-circle-line'
-      case 'budget_rejected': return 'ri-close-circle-line'
-      default: return 'ri-file-line'
-    }
-  }
-
-  const filteredTasks = tasks.filter((task: any) => {
-    const matchesStatus = filterStatus === 'all' || task.status === filterStatus
-    const matchesSearch = task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         task.subject.toLowerCase().includes(searchQuery.toLowerCase())
-    return matchesStatus && matchesSearch
-  })
-
-  const taskStats = {
-    total: tasks.length,
-    submitted: tasks.filter((t: any) => t.status === 'submitted').length,
-    in_progress: tasks.filter((t: any) => t.status === 'in_progress').length,
-    awaiting_review: tasks.filter((t: any) => t.status === 'awaiting_review').length,
-    completed: tasks.filter((t: any) => t.status === 'completed').length,
-    budget_negotiation: tasks.filter((t: any) => t.status === 'budget_negotiation').length
-  }
-
-  const canWithdraw = (task: any) => {
-    return task.status === 'submitted' || task.status === 'budget_negotiation' || (task.status === 'in_progress' && new Date() < new Date(task.withdrawal_deadline))
-  }
-
-  const requestRevision = async () => {
-    if (!revisionFeedback?.trim()) {
-      showToast("Required", "Add feedback", "destructive");
-      return;
-    }
+  const approveTask = async () => {
+    if (!selectedTask) return;
     try {
       setLoading(true);
-      const result = await apiService.post<{task: any, message: string}>(`/tasks/${selectedTask!.id}/request-revision/`, {
-        feedback: revisionFeedback.trim()
-      });
-
-      setTasks(prev => prev.map(task =>
-        task.id === selectedTask!.id ? { ...task, status: result.task.status } : task
-      ));
-      setSelectedTask(prev => prev ? { ...prev, status: result.task.status } : null);
-      setShowRevisionModal(false);
-      setRevisionFeedback('');
-      showToast("Success", result.message);
-    } catch (err: any) {
-      console.error('Failed to request revision:', err);
-      showToast("Error", "Failed to request revision: " + err.message, "destructive");
-    } finally {
-      setLoading(false);
-    }
+      const result = await apiService.post<{task: Task; message: string}>(`/tasks/${selectedTask.id}/approve/`);
+      const upd = normalizeTask(result.task);
+      setTasks(prev => prev.map(t => t.id === upd.id ? upd : t));
+      setSelectedTask(upd); showToast('Success', result.message);
+    } catch (e: any) {
+      console.error(e); showToast('Error', 'Failed to approve task', 'destructive');
+    } finally { setLoading(false); }
   };
 
-  const canApprove = (task: any) => task.status === 'awaiting_review'
+  const requestRevision = async () => {
+    if (!selectedTask) return;
+    if (!revisionFeedback.trim()) { showToast('Required', 'Please add feedback', 'destructive'); return; }
+    try {
+      setLoading(true);
+      const result = await apiService.post<{task: Task; message: string}>(`/tasks/${selectedTask.id}/request-revision/`, { feedback: revisionFeedback.trim() });
+      const upd = normalizeTask(result.task);
+      setTasks(prev => prev.map(t => t.id === upd.id ? upd : t));
+      setSelectedTask(upd); setShowRevisionModal(false); setRevisionFeedback(''); showToast('Success', result.message);
+    } catch (e: any) { console.error(e); showToast('Error', 'Failed to request revision', 'destructive'); }
+    finally { setLoading(false); }
+  };
 
-  const handleLogout = () => {
-    logout()
-    navigate('/')
-    showToast("Logged out", "You have been successfully logged out.")
-  }
+  const handleLogout = () => { logout(); navigate('/'); showToast('Logged out', 'You have been successfully logged out.'); };
 
+  /* ======= Derivations ======= */
+  const filteredTasks = tasks.filter(task => {
+    const matchesStatus = filterStatus === 'all' || task.status === filterStatus;
+    const q = searchQuery.toLowerCase();
+    const title = (task.title ?? '').toLowerCase();
+    const subject = (task.subject ?? '').toLowerCase();
+    return matchesStatus && (title.includes(q) || subject.includes(q));
+  });
+
+  const taskStats = useMemo(() => ({
+    total: tasks.length,
+    submitted: tasks.filter(t => t.status === 'submitted').length,
+    in_progress: tasks.filter(t => t.status === 'in_progress').length,
+    awaiting_review: tasks.filter(t => t.status === 'awaiting_review').length,
+    completed: tasks.filter(t => t.status === 'completed').length,
+    budget_negotiation: tasks.filter(t => t.status === 'budget_negotiation').length
+  }), [tasks]);
+
+  const canApprove = (t: Task) => t.status === 'awaiting_review';
+  const canWithdraw = (t: Task) =>
+    t.status === 'submitted' ||
+    t.status === 'budget_negotiation' ||
+    (t.status === 'in_progress' && t.withdrawal_deadline && new Date() < new Date(t.withdrawal_deadline));
+
+  /* ======= Loading ======= */
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 flex items-center justify-center">
         <div className="text-center">
-          <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <div className="w-16 h-16 border-4 border-purple-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
           <p className="text-gray-600">Loading your dashboard...</p>
         </div>
       </div>
-    )
+    );
   }
 
+  /* ======= Render ======= */
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
-      {/* Toast Notification */}
-      {currentToast && (
-        <Toast
-          title={currentToast.title}
-          description={currentToast.description}
-          variant={currentToast.variant}
-        />
-      )}
+      {currentToast && <Toast title={currentToast.title} description={currentToast.description} variant={currentToast.variant} />}
 
-      {/* Modern Header */}
-      <header className="bg-white/90 backdrop-blur-xl border-b border-gray-200 sticky top-0 z-40 shadow-lg">
+      {/* Header — purplish theme */}
+      <header className="bg-white/90 backdrop-blur-xl border-b border-gray-100 sticky top-0 z-40 shadow-lg">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-20">
-            <div className="flex items-center gap-4">
-              <div className="w-14 h-14 bg-gradient-to-br from-blue-600 via-purple-600 to-indigo-600 rounded-2xl flex items-center justify-center shadow-xl">
-                <i className="ri-graduation-cap-line text-3xl text-white"></i>
+          <div className="flex justify-between items-center h-16">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-10 h-10 bg-gradient-to-br from-blue-600 via-purple-600 to-indigo-600 rounded-xl flex items-center justify-center shadow-xl shrink-0">
+                <i className="ri-graduation-cap-line text-2xl text-white"></i>
               </div>
-
-              <div className="min-w-0">
-                <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 bg-clip-text text-transparent">
-                  Student Portal
-                </h1>
-                <p
-                  className="text-sm text-gray-600 truncate"
-                  title={`Welcome back, ${currentUser?.full_name || currentUser?.username || ''}`}
-                >
-                  Welcome back,{" "}
-                  <span className="font-medium inline-block max-w-[50vw] sm:max-w-[240px] truncate align-bottom">
-                    {currentUser?.full_name || currentUser?.username}
-                  </span>
-                </p>
+              <div className="truncate">
+                <h1 className="text-xl font-bold bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 text-transparent bg-clip-text truncate">Student Portal</h1>
+                <p className="text-xs text-gray-500 truncate">Welcome back, {currentUser?.full_name || currentUser?.username}</p>
               </div>
             </div>
-            <div className="flex items-center gap-4">
-              <div className="hidden md:flex items-center gap-2 bg-blue-50 px-3 py-2 rounded-lg">
-                <i className="ri-time-zone-line text-blue-600"></i>
-                <span className="text-sm text-blue-800">{timezones.find(tz => tz.value === (currentUser?.timezone || 'America/New_York'))?.label}</span>
+
+            <div className="flex items-center gap-2 sm:gap-3">
+              <div className="hidden md:flex items-center gap-2 bg-purple-50 px-3 py-2 rounded-lg border border-purple-200">
+                <i className="ri-time-zone-line text-purple-700"></i>
+                <span className="text-sm text-purple-900">
+                  {timezones.find(tz => tz.value === (currentUser?.timezone || 'America/New_York'))?.label}
+                </span>
               </div>
-              <Button
-                onClick={() => setShowCreateTask(true)}
-                className="bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 hover:from-blue-700 hover:via-purple-700 hover:to-indigo-700 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105 whitespace-nowrap"
-              >
-                <i className="ri-add-line mr-2 text-lg"></i>
-                New Assignment
+              {currentUser?.profile?.avatar && (
+                <img src={currentUser.profile.avatar} alt="avatar" className="w-10 h-10 rounded-full object-cover border-2 border-purple-200" />
+              )}
+              <Button onClick={handleLogout} variant="outline" className="whitespace-nowrap">
+                <i className="ri-logout-box-r-line mr-2"></i> Logout
               </Button>
-              <div className="flex items-center gap-3 pl-4 border-l border-gray-200">
-                {currentUser?.profile?.avatar && (
-                  <img src={currentUser.profile.avatar} alt={currentUser.full_name} className="w-12 h-12 rounded-full object-cover object-top border-3 border-blue-200 shadow-lg" />
-                )}
-                <Button
-                  onClick={handleLogout}
-                  variant="outline"
-                  className="whitespace-nowrap hover:bg-gray-100 border-gray-300"
-                >
-                  <i className="ri-logout-box-line mr-2"></i>
-                  Sign Out
-                </Button>
-              </div>
             </div>
           </div>
         </div>
       </header>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Enhanced Stats Cards */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 md:gap-6 mb-8">
-          <div className="bg-white rounded-2xl p-6 shadow-xl border border-gray-100 hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-1">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600 mb-1">Total Tasks</p>
-                <p className="text-3xl font-bold text-gray-900">{taskStats.total}</p>
-              </div>
-              <div className="w-14 h-14 bg-gradient-to-br from-slate-100 to-slate-200 rounded-xl flex items-center justify-center">
-                <i className="ri-file-list-3-line text-2xl text-slate-600"></i>
-              </div>
-            </div>
-          </div>
-          <div className="bg-white rounded-2xl p-6 shadow-xl border border-gray-100 hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-1">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600 mb-1">Submitted</p>
-                <p className="text-3xl font-bold text-amber-600">{taskStats.submitted}</p>
-              </div>
-              <div className="w-14 h-14 bg-gradient-to-br from-amber-100 to-amber-200 rounded-xl flex items-center justify-center">
-                <i className="ri-time-line text-2xl text-amber-600"></i>
-              </div>
-            </div>
-          </div>
-          <div className="bg-white rounded-2xl p-6 shadow-xl border border-gray-100 hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-1">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600 mb-1">In Progress</p>
-                <p className="text-3xl font-bold text-blue-600">{taskStats.in_progress}</p>
-              </div>
-              <div className="w-14 h-14 bg-gradient-to-br from-blue-100 to-blue-200 rounded-xl flex items-center justify-center">
-                <i className="ri-loader-4-line text-2xl text-blue-600"></i>
-              </div>
-            </div>
-          </div>
-          <div className="bg-white rounded-2xl p-6 shadow-xl border border-gray-100 hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-1">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600 mb-1">Under Review</p>
-                <p className="text-3xl font-bold text-purple-600">{taskStats.awaiting_review}</p>
-              </div>
-              <div className="w-14 h-14 bg-gradient-to-br from-purple-100 to-purple-200 rounded-xl flex items-center justify-center">
-                <i className="ri-eye-line text-2xl text-purple-600"></i>
-              </div>
-            </div>
-          </div>
-          <div className="bg-white rounded-2xl p-6 shadow-xl border border-gray-100 hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-1">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600 mb-1">Negotiating</p>
-                <p className="text-3xl font-bold text-orange-600">{taskStats.budget_negotiation}</p>
-              </div>
-              <div className="w-14 h-14 bg-gradient-to-br from-orange-100 to-orange-200 rounded-xl flex items-center justify-center">
-                <i className="ri-money-dollar-circle-line text-2xl text-orange-600"></i>
-              </div>
-            </div>
-          </div>
-          <div className="bg-white rounded-2xl p-6 shadow-xl border border-gray-100 hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-1">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600 mb-1">Completed</p>
-                <p className="text-3xl font-bold text-emerald-600">{taskStats.completed}</p>
-              </div>
-              <div className="w-14 h-14 bg-gradient-to-br from-emerald-100 to-emerald-200 rounded-xl flex items-center justify-center">
-                <i className="ri-checkbox-circle-line text-2xl text-emerald-600"></i>
-              </div>
-            </div>
-          </div>
-        </div>
+      {/* Shell layout: left nav / middle details / right list */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        <div className="
+          h-[calc(100vh-7.5rem)]
+          grid gap-6
+          grid-cols-1
+          md:grid-cols-[220px_1fr_300px]
+          lg:grid-cols-[220px_1fr_340px]
+        ">
+          {/* Left nav */}
+          <aside className="bg-white/80 backdrop-blur border border-gray-200 rounded-2xl p-4 space-y-1">
+            <div className="text-xs text-gray-500 px-2 mb-1">Navigation</div>
+            {[
+              { label: 'Dashboard', icon: 'ri-dashboard-line' },
+              { label: 'My Assignments', icon: 'ri-file-list-3-line' },
+              { label: 'Messages', icon: 'ri-chat-3-line' },
+              { label: 'Account', icon: 'ri-user-3-line' },
+              { label: 'Support', icon: 'ri-customer-service-2-line' },
+            ].map(({ label, icon }) => (
+              <button key={label} className="w-full text-left flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-gray-50">
+                <i className={`${icon} text-purple-600`}></i>
+                <span className="text-sm">{label}</span>
+              </button>
+            ))}
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Enhanced Tasks List */}
-          <div className="lg:col-span-1">
-            <div className="bg-white rounded-3xl shadow-xl border border-gray-100 overflow-hidden">
-              <div className="p-6 border-b border-gray-100 bg-gradient-to-r from-blue-50 via-purple-50 to-indigo-50">
-                <h2 className="text-2xl font-bold text-gray-900 mb-4">My Assignments</h2>
+            {/* Snapshot */}
+            <div className="mt-4 p-3 bg-purple-50 border border-purple-200 rounded-xl">
+              <div className="text-xs text-purple-800 font-semibold mb-2">Snapshot</div>
+              <div className="space-y-1 text-xs text-purple-900">
+                <div className="flex justify-between"><span>Total</span><span className="font-semibold">{taskStats.total}</span></div>
+                <div className="flex justify-between"><span>In Progress</span><span className="font-semibold">{taskStats.in_progress}</span></div>
+                <div className="flex justify-between"><span>Review</span><span className="font-semibold">{taskStats.awaiting_review}</span></div>
+                <div className="flex justify-between"><span>Done</span><span className="font-semibold">{taskStats.completed}</span></div>
+              </div>
+            </div>
 
-                {/* Search */}
-                <div className="relative mb-4">
-                  <i className="ri-search-line absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
-                  <Input
-                    placeholder="Search assignments..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-10 bg-white border-gray-200 rounded-xl"
-                  />
+            <Button onClick={() => setShowCreateTask(true)} className="w-full mt-4 bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 text-white">
+              <i className="ri-add-line mr-2"></i>New Assignment
+            </Button>
+          </aside>
+
+          {/* Middle: details */}
+          <section className="bg-white border border-gray-200 rounded-2xl p-6 overflow-hidden flex flex-col min-h-0">
+            {!selectedTask ? (
+              <div className="flex-1 grid place-items-center text-gray-500">Select an assignment from the right list</div>
+            ) : (
+              <div className="flex-1 overflow-y-auto pr-2">
+                {/* Header row */}
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h2 className="text-2xl font-bold text-gray-900 mb-1 truncate">{selectedTask.title}</h2>
+                    <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-sm text-gray-600">
+                      <span className="flex items-center gap-1"><i className="ri-book-line"></i>{selectedTask.subject}</span>
+                      <span className="flex items-center gap-1"><i className="ri-graduation-cap-line"></i>{selectedTask.education_level}</span>
+                      <span className="flex items-center gap-1"><i className="ri-calendar-line"></i>Due: {new Date(selectedTask.deadline).toLocaleDateString()}</span>
+                      <span className="flex items-center gap-1"><i className="ri-time-zone-line"></i>{timezones.find(tz => tz.value === selectedTask.timezone_str)?.label || selectedTask.timezone_str}</span>
+                      {selectedTask.budget ? (
+                        <span className="flex items-center gap-1 text-purple-700 font-semibold"><i className="ri-money-dollar-circle-line"></i>${selectedTask.budget}</span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-orange-700 font-semibold"><i className="ri-money-dollar-circle-line"></i>Proposed: ${selectedTask.proposed_budget}</span>
+                      )}
+                    </div>
+                  </div>
+                  <span className={`shrink-0 inline-flex items-center gap-2 px-3 py-1 text-sm font-medium rounded-full border ${getStatusColor(selectedTask.status)}`}>
+                    <i className={getStatusIcon(selectedTask.status)}></i>{formatStatus(selectedTask.status)}
+                  </span>
                 </div>
 
-                {/* Enhanced Filter Tabs */}
-                <div className="flex gap-2 overflow-x-auto pb-2">
-                  {['all', 'submitted', 'budget_negotiation', 'in_progress', 'awaiting_review', 'completed'].map(status => (
-                    <button
-                      key={status}
-                      onClick={() => setFilterStatus(status)}
-                      className={`px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all duration-200 ${
-                        filterStatus === status
-                          ? 'bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 text-white shadow-lg'
-                          : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'
-                      }`}
-                    >
-                      {status === 'all' ? 'All' : formatStatus(status)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="divide-y divide-gray-100 max-h-[700px] overflow-y-auto">
-                {filteredTasks.length === 0 ? (
-                  <div className="p-8 text-center">
-                    <i className="ri-inbox-line text-6xl text-gray-300 mb-4"></i>
-                    <p className="text-gray-500 text-lg">No assignments found</p>
-                    <Button
-                      onClick={() => setShowCreateTask(true)}
-                      className="mt-4 bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 text-white"
-                    >
-                      Create Your First Assignment
-                    </Button>
-                  </div>
-                ) : (
-                  filteredTasks.map((task) => (
-                    <div
-                      key={task.id}
-                      className={`p-6 cursor-pointer transition-all duration-200 ${
-                        selectedTask?.id === task.id
-                          ? 'bg-gradient-to-r from-blue-50 via-purple-50 to-indigo-50 border-r-4 border-blue-500'
-                          : 'hover:bg-gray-50'
-                      }`}
-                      onClick={() => setSelectedTask(task)}
-                    >
-                      <div className="flex items-start justify-between mb-3">
-                        <h3 className="font-bold text-gray-900 flex-1 pr-2 line-clamp-2 text-lg">{task.title}</h3>
-                        <i className={`${getStatusIcon(task.status)} text-2xl flex-shrink-0`}></i>
-                      </div>
-                      <p className="text-sm text-gray-600 mb-3">{task.subject} • {task.education_level}</p>
-
-                      {/* Budget Negotiation Alert */}
-                      {task.status === 'budget_negotiation' && (
-                        <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 mb-3">
-                          <div className="flex items-center gap-2 text-orange-800 mb-1">
-                            <i className="ri-money-dollar-circle-line"></i>
-                            <span className="font-medium text-sm">Budget Negotiation</span>
-                          </div>
-                          <p className="text-xs text-orange-700">
-                            Expert proposed: ${task.admin_counter_budget} (Your budget: ${task.proposed_budget})
-                          </p>
-                        </div>
-                      )}
-
-                      <div className="flex items-center justify-between mb-3">
-                        <span className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-full border ${getStatusColor(task.status)}`}>
-                          {formatStatus(task.status)}
-                        </span>
-                        <span className="text-xs text-gray-500 flex items-center gap-1">
-                          <i className="ri-calendar-line"></i>
-                          {new Date(task.deadline).toLocaleDateString()}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <i className="ri-attachment-line text-gray-400"></i>
-                          <span className="text-xs text-gray-500">{task.files?.length || 0} files</span>
-                          <i className="ri-time-zone-line text-gray-400 ml-2"></i>
-                          <span className="text-xs text-gray-500">{timezones.find(tz => tz.value === task.timezone_str)?.label.split(' ')[0]}</span>
-                        </div>
-                        {task.budget && (
-                          <div className="flex items-center gap-1 text-sm font-bold text-green-600">
-                            <i className="ri-money-dollar-circle-line"></i>
-                            ${task.budget}
-                          </div>
-                        )}
-                      </div>
-
-                      {task.revisions && task.revisions.length > 0 && (
-                        <div className="mt-2 flex items-center gap-1 text-xs text-orange-600">
-                          <i className="ri-edit-line"></i>
-                          {task.revisions.length} revision{task.revisions.length > 1 ? 's' : ''}
-                        </div>
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Enhanced Task Details & Communication */}
-          <div className="lg:col-span-2">
-            {selectedTask ? (
-              <div className="bg-white rounded-3xl shadow-xl border border-gray-100 overflow-hidden">
-                {/* Enhanced Task Header */}
-                <div className="p-8 border-b border-gray-100 bg-gradient-to-r from-blue-50 via-purple-50 to-indigo-50">
-                  <div className="flex items-start justify-between mb-6">
-                    <div className="flex-1">
-                      <h2 className="text-3xl font-bold text-gray-900 mb-3">{selectedTask.title}</h2>
-                      <div className="flex flex-wrap items-center gap-4 text-sm text-gray-600 mb-4">
-                        <span className="flex items-center gap-2 bg-white px-3 py-1 rounded-lg">
-                          <i className="ri-book-line"></i>
-                          {selectedTask.subject}
-                        </span>
-                        <span className="flex items-center gap-2 bg-white px-3 py-1 rounded-lg">
-                          <i className="ri-graduation-cap-line"></i>
-                          {selectedTask.education_level}
-                        </span>
-                        <span className="flex items-center gap-2 bg-white px-3 py-1 rounded-lg">
-                          <i className="ri-calendar-line"></i>
-                          Due: {new Date(selectedTask.deadline).toLocaleDateString()}
-                        </span>
-                        <span className="flex items-center gap-2 bg-white px-3 py-1 rounded-lg">
-                          <i className="ri-time-zone-line"></i>
-                          {timezones.find(tz => tz.value === selectedTask.timezone_str)?.label}
-                        </span>
-                        {selectedTask.budget && (
-                          <span className="flex items-center gap-2 bg-green-50 text-green-700 px-3 py-1 rounded-lg font-semibold">
-                            <i className="ri-money-dollar-circle-line"></i>
-                            ${selectedTask.budget}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <span className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-full border ${getStatusColor(selectedTask.status)}`}>
-                      <i className={getStatusIcon(selectedTask.status)}></i>
-                      {formatStatus(selectedTask.status)}
-                    </span>
-                  </div>
-
-                  {/* Budget Section */}
-                  {(selectedTask.status === 'submitted' || selectedTask.status === 'budget_negotiation') && (
-                    <div className="bg-blue-50 border border-blue-200 rounded-2xl p-6 mb-6">
-                      <h3 className="font-bold text-blue-900 mb-3 text-lg flex items-center gap-2">
-                        <i className="ri-money-dollar-circle-line"></i>
-                        Budget Information
-                      </h3>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                        <div className="bg-white rounded-lg p-4">
-                          <p className="text-sm text-gray-600 mb-1">Proposed Budget</p>
-                          <p className="text-2xl font-bold text-blue-600">${selectedTask.proposed_budget}</p>
-                        </div>
-                        {selectedTask.admin_counter_budget && (
-                          <div className="bg-white rounded-lg p-4">
-                            <p className="text-sm text-gray-600 mb-1">Expert Counter-Offer</p>
-                            <p className="text-2xl font-bold text-orange-600">${selectedTask.admin_counter_budget}</p>
-                          </div>
-                        )}
-                      </div>
-
-                      {selectedTask.negotiation_reason && (
-                        <div className="bg-white rounded-lg p-4 mb-4">
-                          <p className="text-sm text-gray-600 mb-2">Expert's Explanation:</p>
-                          <p className="text-gray-800">{selectedTask.negotiation_reason}</p>
-                        </div>
-                      )}
-
-                      {selectedTask.status === 'submitted' && (
-                        <div className="flex items-center gap-2 text-orange-600 bg-white rounded-lg p-4">
-                          <i className="ri-time-line text-xl"></i>
-                          <span className="font-medium">Waiting for expert to review your budget...</span>
-                        </div>
-                      )}
-
-                      {selectedTask.status === 'budget_negotiation' && selectedTask.negotiation_status === 'pending_student_response' && (
-                        <div className="flex gap-3">
-                          <Button
-                            onClick={() => respondToBudgetNegotiation('accept')}
-                            className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white whitespace-nowrap"
-                          >
-                            <i className="ri-check-line mr-1"></i>
-                            Accept ${selectedTask.admin_counter_budget}
-                          </Button>
-                          <Button
-                            onClick={() => setShowBudgetNegotiation(true)}
-                            variant="outline"
-                            className="flex-1 border-orange-300 text-orange-600 hover:bg-orange-50 whitespace-nowrap"
-                          >
-                            <i className="ri-money-dollar-circle-line mr-1"></i>
-                            Counter Again
-                          </Button>
-                          <Button
-                            onClick={() => setShowWithdrawModal(true)}
-                            variant="outline"
-                            className="border-red-300 text-red-600 hover:bg-red-50 whitespace-nowrap"
-                          >
-                            <i className="ri-close-line mr-1"></i>
-                            Withdraw
-                          </Button>
-                        </div>
-                      )}
-
-                      {selectedTask.status === 'budget_negotiation' && selectedTask.negotiation_status === 'pending_admin_review' && (
-                        <div className="flex items-center gap-2 text-orange-600 bg-white rounded-lg p-4 mt-3">
-                          <i className="ri-time-line text-xl"></i>
-                          <span className="font-medium">Waiting for expert to review your budget...</span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Status Information — submitted */}
-                  {selectedTask.status === 'submitted' && (
-                    <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 mb-6">
-                      <div className="flex items-center gap-3">
-                        <i className="ri-time-line text-3xl text-amber-600"></i>
-                        <div>
-                          <h3 className="font-bold text-amber-900 text-lg">Pending Review</h3>
-                          <p className="text-amber-700">Your assignment is being reviewed. You'll be notified once it's accepted.</p>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* IN PROGRESS – Compact */}
-                  {selectedTask.status === 'in_progress' && (
-                    <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 mb-6">
-                      <div className="flex items-center gap-3 mb-3">
-                        <i className="ri-loader-4-line text-3xl text-blue-600"></i>
-                        <div>
-                          <h3 className="font-bold text-blue-900 text-lg">Work In Progress</h3>
-                          <p className="text-sm text-blue-700">Progress: {selectedTask.progress || 0}%</p>
-                        </div>
-                      </div>
+                {/* Budget blocks */}
+                {(selectedTask.status === 'submitted' || selectedTask.status === 'budget_negotiation') && (
+                  <div className="bg-purple-50 border border-purple-200 rounded-xl p-4 mb-4">
+                    <h3 className="font-semibold text-purple-900 mb-3">Budget</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="bg-white rounded-lg p-4">
-                        <div className="w-full bg-gray-200 rounded-full h-2.5">
-                          <div
-                            className="h-full rounded-full transition-all duration-700"
-                            style={{ width: `${selectedTask.progress || 0}%` }}
-                          />
+                        <p className="text-sm text-gray-600 mb-1">Your Proposed</p>
+                        <p className="text-xl font-bold text-purple-700">${selectedTask.proposed_budget}</p>
+                      </div>
+                      {selectedTask.admin_counter_budget && (
+                        <div className="bg-white rounded-lg p-4">
+                          <p className="text-sm text-gray-600 mb-1">Expert Counter</p>
+                          <p className="text-xl font-bold text-orange-600">${selectedTask.admin_counter_budget}</p>
                         </div>
-                      </div>
+                      )}
                     </div>
-                  )}
-
-                  {/* AWAITING REVIEW */}
-                  {selectedTask.status === 'awaiting_review' && (
-                    <div className="bg-purple-50 border border-purple-300 rounded-2xl p-5 shadow-md">
-                      <div className="text-center mb-5">
-                        <i className="ri-file-check-line text-5xl text-purple-600"></i>
-                        <h3 className="text-xl font-bold text-purple-900 mt-2">Assignment Ready!</h3>
-                        <p className="text-xs text-purple-700 mt-1">Expert has submitted final work</p>
+                    {selectedTask.negotiation_reason && (
+                      <div className="bg-white rounded-lg p-4 mt-3">
+                        <p className="text-sm text-gray-600 mb-1">Expert’s explanation</p>
+                        <p className="text-gray-800">{selectedTask.negotiation_reason}</p>
                       </div>
+                    )}
 
-                      <div className="bg-white rounded-xl p-4 mb-5 border border-purple-100">
-                        <h4 className="font-bold text-gray-900 text-sm mb-3 flex items-center gap-2">
-                          <i className="ri-download-cloud-2-line text-purple-600"></i>
-                          Final Files ({selectedTask.files?.filter((f: any) => f.uploaded_by_role === 'admin' || f.uploaded_by === 'admin').length || 0})
-                        </h4>
-
-                        {selectedTask.files?.filter((f: any) => f.uploaded_by_role === 'admin' || f.uploaded_by === 'admin').length === 0 ? (
-                          <p className="text-xs text-gray-500 text-center py-4">No files submitted yet</p>
-                        ) : (
-                          <div className="space-y-2">
-                            {selectedTask.files
-                              .filter((f: any) => f.uploaded_by_role === 'admin' || f.uploaded_by === 'admin')
-                              .map((file: any) => (
-                                <div key={file.id} className="flex items-center justify-between p-3 bg-purple-50 rounded-lg hover:bg-purple-100">
-                                  <div className="flex items-center gap-3 flex-1 min-w-0">
-                                    <i className={`${getFileIcon(file.file_type || file.name.split('.').pop())} text-xl text-purple-700`} />
-                                    <p className="text-sm font-medium text-purple-900 truncate">{file.name}</p>
-                                  </div>
-                                  <Button
-                                    size="sm"
-                                    onClick={() => downloadFile(file)}
-                                    className="bg-purple-600 hover:bg-purple-700 text-white text-xs px-3 py-1.5 ml-2"
-                                  >
-                                    <i className="ri-download-line"></i>
-                                  </Button>
-                                </div>
-                              ))}
-                          </div>
-                        )}
+                    {selectedTask.status === 'submitted' && (
+                      <div className="mt-3 text-sm text-purple-900 bg-white rounded-lg p-3 border border-purple-200">
+                        <i className="ri-time-line mr-2"></i>Waiting for expert to review your budget…
                       </div>
+                    )}
 
-                      <div className="grid grid-cols-2 gap-3">
-                        <Button
-                          onClick={approveTask}
-                          className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-sm py-3 rounded-xl shadow-md hover:shadow-lg flex items-center justify-center gap-2"
-                        >
-                          <i className="ri-check-line text-lg"></i>
-                          Approve
+                    {selectedTask.status === 'budget_negotiation' && selectedTask.negotiation_status === 'pending_student_response' && (
+                      <div className="mt-3 flex flex-wrap gap-3">
+                        <Button onClick={() => respondToBudgetNegotiation('accept')} className="h-11 bg-emerald-600 hover:bg-emerald-700 text-white">
+                          <i className="ri-check-line mr-2"></i>Accept ${selectedTask.admin_counter_budget}
                         </Button>
-
-                        <Button
-                          onClick={() => setShowRevisionModal(true)}
-                          variant="outline"
-                          className="border-2 border-orange-500 text-orange-600 hover:bg-orange-50 font-medium text-sm py-3 rounded-xl flex items-center justify-center gap-2"
-                        >
-                          <i className="ri-edit-line text-lg"></i>
-                          Revision
+                        <Button onClick={() => setShowBudgetNegotiation(true)} variant="outline" className="h-11 border-orange-500 text-orange-600 hover:bg-orange-50">
+                          <i className="ri-money-dollar-circle-line mr-2"></i>Counter Again
+                        </Button>
+                        <Button onClick={() => setShowWithdrawModal(true)} variant="outline" className="h-11 border-red-500 text-red-600 hover:bg-red-50">
+                          <i className="ri-close-line mr-2"></i>Withdraw
                         </Button>
                       </div>
+                    )}
 
-                      <p className="text-center text-xs text-purple-700 mt-4">
-                        Approve = task completed & payment released
-                      </p>
-                    </div>
-                  )}
-
-                  {/* TASK DESCRIPTION */}
-                  <div className="bg-white rounded-2xl p-6 shadow-sm mt-6">
-                    <h3 className="font-bold text-gray-900 mb-3 text-lg">Assignment Description</h3>
-                    <p className="text-gray-700 leading-relaxed whitespace-pre-wrap">
-                      {selectedTask.description || 'No description provided.'}
-                    </p>
+                    {selectedTask.status === 'budget_negotiation' && selectedTask.negotiation_status === 'pending_admin_review' && (
+                      <div className="mt-3 text-sm text-purple-900 bg-white rounded-lg p-3 border border-purple-200">
+                        <i className="ri-time-line mr-2"></i>Waiting for expert to review your counter…
+                      </div>
+                    )}
                   </div>
+                )}
 
-                  {/* ORIGINAL CLIENT FILES – Only show when NOT awaiting_review */}
-                  {selectedTask.status !== 'awaiting_review' && selectedTask.files?.some((f: any) => f.uploaded_by_role === 'client' || f.uploaded_by === 'client') && (
-                    <div className="bg-white rounded-2xl p-6 shadow-sm mt-6">
-                      <h3 className="font-bold text-gray-900 mb-4 text-lg flex items-center gap-2">
-                        <i className="ri-upload-cloud-2-line"></i>
-                        Your Uploaded Files
-                      </h3>
-                      <div className="space-y-3">
-                        {selectedTask.files
-                          .filter((f: any) => f.uploaded_by_role === 'client' || f.uploaded_by === 'client')
-                          .map((file: any) => (
-                            <div key={file.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-xl">
-                              <div className="flex items-center gap-3">
-                                <i className={`${getFileIcon(file.file_type || file.name.split('.').pop())} text-xl text-gray-600`} />
-                                <p className="text-sm font-medium text-gray-800">{file.name}</p>
-                              </div>
-                              <Button size="sm" variant="outline" onClick={() => downloadFile(file)}>
-                                Download
-                              </Button>
-                            </div>
-                          ))}
+                {/* Status cards */}
+                {selectedTask.status === 'in_progress' && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 mb-4">
+                    <div className="flex items-center gap-3 mb-3">
+                      <i className="ri-loader-4-line text-3xl text-blue-600"></i>
+                      <div>
+                        <h3 className="font-bold text-blue-900 text-lg">Work In Progress</h3>
+                        <p className="text-sm text-blue-700">Progress: {selectedTask.progress || 0}%</p>
                       </div>
                     </div>
-                  )}
+                    <div className="bg-white rounded-lg p-4">
+                      <div className="w-full bg-gray-200 rounded-full h-2.5">
+                        <div className="bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 h-2.5 rounded-full" style={{ width: `${selectedTask.progress || 0}%` }}></div>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
-                  {/* Files Section */}
-                  <div className="bg-white rounded-2xl p-6 shadow-sm mt-6">
-                    <h3 className="font-bold text-gray-900 mb-4 text-lg flex items-center gap-2">
-                      <i className="ri-folder-line"></i>
-                      Assignment Files ({selectedTask.files?.length || 0})
-                    </h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {selectedTask.files?.map((file: any) => (
-                        <div key={file.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors">
-                          <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
-                            <i className={`${getFileIcon(file.file_type || file.name?.split('.').pop())} text-blue-600`}></i>
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="font-medium text-gray-900 truncate">{file.name}</p>
-                            <p className="text-xs text-gray-500">{file.size} • {file.uploaded_by_name}</p>
-                          </div>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="whitespace-nowrap"
-                            onClick={() => downloadFile(file)}
-                          >
+                {selectedTask.status === 'awaiting_review' && (
+                  <div className="bg-purple-50 border border-purple-300 rounded-2xl p-5 mb-4">
+                    <div className="text-center mb-4">
+                      <i className="ri-file-check-line text-5xl text-purple-600"></i>
+                      <h3 className="text-xl font-bold text-purple-900 mt-2">Assignment Ready!</h3>
+                      <p className="text-xs text-purple-700 mt-1">Expert has submitted final work</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <Button onClick={approveTask} className="bg-emerald-600 hover:bg-emerald-700 text-white">
+                        <i className="ri-check-line mr-2"></i>Approve
+                      </Button>
+                      <Button onClick={() => setShowRevisionModal(true)} variant="outline" className="border-orange-500 text-orange-600 hover:bg-orange-50">
+                        <i className="ri-edit-line mr-2"></i>Request Revision
+                      </Button>
+                    </div>
+                    <p className="text-center text-xs text-purple-700 mt-3">Approve = task completed & payment released</p>
+                  </div>
+                )}
+
+                {/* Description */}
+                <div className="bg-white rounded-xl p-4 mb-4 border">
+                  <h3 className="font-semibold mb-2">Assignment Description</h3>
+                  <p className="text-gray-700 whitespace-pre-wrap">{selectedTask.description || 'No description provided.'}</p>
+                </div>
+
+                {/* Files */}
+                <div className="bg-white rounded-xl p-4 mb-6 border">
+                  <h3 className="font-semibold mb-3">Files ({selectedTask.files?.length ?? 0})</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {(selectedTask.files ?? []).map((file) => (
+                      <div key={file.id} className="flex flex-wrap items-center gap-3 p-3 bg-gray-50 rounded-xl border">
+                        <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center shrink-0">
+                          <i className={`${getFileIcon(file.file_type || file.name?.split('.').pop())} text-purple-600`}></i>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-gray-900 truncate">{file.name}</p>
+                          <p className="text-xs text-gray-500">{file.size} • {file.uploaded_by_name}</p>
+                        </div>
+                        <div className="ml-auto shrink-0 w-full sm:w-auto">
+                          <Button size="sm" variant="outline" className="h-9 px-2 w-full sm:w-auto" onClick={() => downloadFile(file)}>
                             <i className="ri-download-line"></i>
                           </Button>
                         </div>
-                      ))}
-                    </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
 
-                {/* Revisions Section */}
-                {selectedTask.revisions && selectedTask.revisions.length > 0 && (
-                  <div className="p-6 border-b border-gray-100 bg-orange-50">
-                    <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
-                      <i className="ri-edit-line"></i>
-                      Revision History ({selectedTask.revisions.length})
-                    </h3>
-                    <div className="space-y-4">
-                      {selectedTask.revisions.map((revision: any) => (
-                        <div key={revision.id} className="bg-white rounded-xl p-4 shadow-sm">
-                          <div className="flex items-start justify-between mb-2">
-                            <span className="text-sm text-gray-500">
-                              {new Date(revision.requested_at).toLocaleDateString()} at {new Date(revision.requested_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </span>
-                            <span className={`px-2 py-1 text-xs rounded-full ${revision.status === 'completed' ? 'bg-green-100 text-green-800' : 'bg-orange-100 text-orange-800'}`}>
-                              {revision.status === 'completed' ? 'Completed' : 'In Progress'}
-                            </span>
-                          </div>
-                          <p className="text-gray-700">{revision.feedback}</p>
-                          {revision.completed_at && (
-                            <p className="text-xs text-green-600 mt-2">
-                              Completed on {new Date(revision.completed_at).toLocaleDateString()}
-                            </p>
-                          )}
-                        </div>
-                      ))}
-                    </div>
+                {/* Messaging quick action */}
+                <div className="bg-white rounded-xl p-4 border flex flex-wrap items-center justify-between gap-3">
+                  <div className="font-semibold flex items-center gap-2">
+                    <i className="ri-chat-3-line"></i><span>Messaging</span>
                   </div>
-                )}
-
-                {/* Enhanced Chat Section */}
-                <div className="p-6">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-                      <i className="ri-chat-3-line"></i>
-                      Communication with {selectedTask.assigned_admin?.full_name || 'Expert'}
-                    </h3>
-                    <Button onClick={refreshChat} variant="outline" size="sm" className="whitespace-nowrap">
-                      <i className="ri-refresh-line mr-2"></i>
-                      Refresh
+                  <div className="relative">
+                    <Button variant="outline" onClick={openChatWindow} className="h-10 px-3 text-sm w-full sm:w-auto">
+                      <i className="ri-window-2-line mr-2"></i>Open Chat Window
                     </Button>
                   </div>
-
-                  <div className="bg-gray-50 rounded-2xl border border-gray-200 h-[50vh] md:h-96 flex flex-col">
-                    <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                      {chatMessages.length === 0 ? (
-                        <div className="text-center text-gray-500 py-12">
-                          <i className="ri-chat-off-line text-6xl mb-4 text-gray-300"></i>
-                          <p className="text-lg">No messages yet. Start the conversation!</p>
-                        </div>
-                      ) : (
-                        <>
-                          {chatMessages.map((message) => {
-                            const isMine =
-                              message.sender === currentUser?.username ||
-                              message.sender_username === currentUser?.username ||
-                              message.sender?.username === currentUser?.username;
-
-                            return (
-                              <div key={message.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
-                                <div
-                                  className={`max-w-xs lg:max-w-md px-4 py-3 rounded-2xl shadow-sm ${
-                                    isMine
-                                      ? 'bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 text-white'
-                                      : 'bg-white text-gray-900 border border-gray-200'
-                                  }`}
-                                >
-                                  <p className="text-sm leading-relaxed mb-2">{message.message}</p>
-
-                                  {message.file_url && (
-                                    <div className="mb-2">
-                                      <div className={`text-xs p-2 rounded-lg ${isMine ? 'bg-white/20' : 'bg-gray-100'}`}>
-                                        <a
-                                          href={makeAbsoluteFileUrl(message.file_url)}
-                                          download
-                                          target="_blank"
-                                          rel="noopener"
-                                          className="flex items-center gap-1 hover:underline"
-                                        >
-                                          <i className="ri-attachment-line"></i>
-                                          {message.file_name || 'Download file'}
-                                        </a>
-                                      </div>
-                                    </div>
-                                  )}
-
-                                  <p className={`text-xs flex items-center gap-1 ${isMine ? 'text-blue-100' : 'text-gray-500'}`}>
-                                    <i className="ri-user-line"></i>
-                                    {isMine ? 'You' : (selectedTask.assigned_admin?.full_name || 'Expert')}
-                                    {' • '}
-                                    {new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                  </p>
-                                </div>
-                              </div>
-                            );
-                          })}
-
-                          {isTyping && (
-                            <div className="flex justify-start">
-                              <div className="bg-gray-100 text-gray-600 px-4 py-2 rounded-2xl">
-                                <div className="flex items-center gap-1">
-                                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                                  <span className="text-xs ml-2">Expert is typing...</span>
-                                </div>
-                              </div>
-                            </div>
-                          )}
-
-                          <div ref={chatEndRef} />
-                        </>
-                      )}
-                    </div>
-
-                    <div className="border-t border-gray-200 p-4 bg-white rounded-b-2xl">
-                      {uploadedFiles.length > 0 && (
-                        <div className="mb-3 flex flex-wrap gap-2">
-                          {uploadedFiles.map((file, index) => (
-                            <div key={index} className="flex items-center gap-2 bg-blue-50 px-3 py-1 rounded-lg text-sm">
-                              <i className="ri-file-line text-blue-600"></i>
-                              <span className="text-blue-800">{file.name}</span>
-                              <button onClick={() => removeFile(index)} className="text-blue-600 hover:text-blue-800 cursor-pointer">
-                                <i className="ri-close-line"></i>
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      <div className="flex gap-2">
-                        <Input
-                          value={newMessage}
-                          onChange={handleMessageInputChange}
-                          onKeyPress={handleKeyPress}
-                          placeholder="Type your message..."
-                          className="flex-1"
-                        />
-                        <input
-                          ref={fileInputRef}
-                          type="file"
-                          multiple
-                          onChange={handleFileUpload}
-                          className="hidden"
-                        />
-                        <Button onClick={() => fileInputRef.current?.click()} variant="outline" className="whitespace-nowrap">
-                          <i className="ri-attachment-line"></i>
-                        </Button>
-                        <Button
-                          onClick={sendMessage}
-                          disabled={!newMessage.trim() && uploadedFiles.length === 0}
-                          className="bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 hover:from-blue-700 hover:via-purple-700 hover:to-indigo-700 text-white whitespace-nowrap px-6"
-                        >
-                          <i className="ri-send-plane-fill"></i>
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
                 </div>
               </div>
-            ) : (
-              <div className="bg-white rounded-3xl shadow-xl p-16 text-center border border-gray-100">
-                <i className="ri-file-list-3-line text-8xl text-gray-300 mb-6"></i>
-                <p className="text-gray-500 text-xl">Select an assignment to view details and communicate</p>
-                {tasks.length === 0 && (
-                  <Button
-                    onClick={() => setShowCreateTask(true)}
-                    className="mt-6 bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 text-white"
+            )}
+          </section>
+
+          {/* Right: tasks list */}
+          <aside className="bg-white border border-gray-200 rounded-2xl overflow-hidden flex flex-col">
+            <div className="p-4 border-b border-gray-100">
+              <h2 className="text-lg font-semibold text-gray-900 mb-3">My Assignments</h2>
+              <Input placeholder="Search…" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="mb-3" />
+              <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value as any)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm">
+                <option value="all">All Status</option>
+                <option value="submitted">Submitted</option>
+                <option value="budget_negotiation">Budget Negotiation</option>
+                <option value="in_progress">In Progress</option>
+                <option value="awaiting_review">Awaiting Review</option>
+                <option value="revision_requested">Revision Requested</option>
+                <option value="completed">Completed</option>
+                <option value="withdrawn">Withdrawn</option>
+              </select>
+            </div>
+
+            <div className="overflow-y-auto p-2 h-full">
+              {filteredTasks.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">
+                  <i className="ri-file-list-3-line text-6xl mb-4 text-gray-300"></i>
+                  <p>No assignments found</p>
+                  <Button onClick={() => setShowCreateTask(true)} className="mt-4 bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 text-white">Create New</Button>
+                </div>
+              ) : (
+                filteredTasks.map(task => (
+                  <div
+                    key={task.id}
+                    onClick={() => setSelectedTask(task)}
+                    className={`p-4 mb-2 rounded-xl border transition-colors cursor-pointer ${
+                      selectedTask?.id === task.id ? 'bg-purple-50 border-purple-200' : 'bg-white border-gray-200 hover:bg-gray-50'
+                    } ${task.status === 'withdrawn' ? 'opacity-50' : ''}`}
                   >
-                    Create Your First Assignment
-                  </Button>
+                    <div className="flex items-start justify-between mb-1">
+                      <h3 className="font-semibold text-gray-900 text-sm line-clamp-2">{task.title}</h3>
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium rounded-full border ${getStatusColor(task.status)}`}>
+                        <i className={getStatusIcon(task.status)}></i>{formatStatus(task.status)}
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-600 mb-2 line-clamp-2">{task.subject} • {task.education_level}</p>
+                    <div className="flex items-center justify-between text-[11px] text-gray-500">
+                      <span className="flex items-center gap-1"><i className="ri-calendar-line"></i>{new Date(task.deadline).toLocaleDateString()}</span>
+                      {task.budget ? (
+                        <span className="flex items-center gap-1 text-emerald-600 font-semibold"><i className="ri-money-dollar-circle-line"></i>${task.budget}</span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-orange-600 font-semibold"><i className="ri-money-dollar-circle-line"></i>Proposed: ${task.proposed_budget}</span>
+                      )}
+                    </div>
+                    {(task.revisions?.length ?? 0) > 0 && (
+                      <div className="mt-1 flex items-center gap-1 text-[11px] text-orange-600">
+                        <i className="ri-edit-line"></i>{(task.revisions?.length ?? 0)} revision{(task.revisions?.length ?? 0) > 1 ? 's' : ''}
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </aside>
+        </div>
+      </main>
+
+      {/* Floating Chat Window */}
+      {showChatWindow && selectedTask && (
+        <>
+          {chatMinimized ? (
+            <button
+              onClick={() => setChatMinimized(false)}
+              className="fixed bottom-4 left-4 z-50 bg-white border border-gray-200 shadow-lg rounded-full px-4 h-11 flex items-center gap-2"
+            >
+              <i className="ri-message-3-line"></i>
+              <span className="text-sm font-medium truncate max-w-[200px]">{selectedTask.title}</span>
+            </button>
+          ) : (
+            <div
+              ref={chatRef}
+              style={{ left: chatPos.x, top: chatPos.y, width: chatSize.w, height: chatSize.h, resize: 'both' }}
+              className="fixed z-50 bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden flex flex-col"
+            >
+              {/* Drag handle */}
+              <div onMouseDown={onDragStart} className="px-3 py-2 border-b cursor-move select-none bg-gray-50 flex items-center justify-between">
+                <div className="font-semibold text-sm truncate">
+                  <i className="ri-chat-3-line mr-2"></i>Chat • {selectedTask.title}
+                </div>
+                <div className="flex items-center gap-1">
+                  <Button onClick={() => loadChat(selectedTask.id)} variant="outline" size="sm" className="h-8 px-2"><i className="ri-refresh-line"></i></Button>
+                  <button onClick={() => setChatMinimized(true)} className="w-8 h-8 rounded-lg hover:bg-gray-200 grid place-items-center" title="Minimize">
+                    <i className="ri-subtract-line text-lg"></i>
+                  </button>
+                  <button onClick={closeChatWindow} className="w-8 h-8 rounded-lg hover:bg-gray-200 grid place-items-center" title="Close">
+                    <i className="ri-close-line text-lg"></i>
+                  </button>
+                </div>
+              </div>
+
+              {/* Messages */}
+              <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 bg-gray-50">
+                {chatMessages.length === 0 ? (
+                  <div className="text-center text-gray-500 py-10">
+                    <i className="ri-chat-off-line text-5xl mb-3 text-gray-300"></i>
+                    <p>No messages yet. Start the conversation!</p>
+                  </div>
+                ) : (
+                  <>
+                    {chatMessages.map((message) => {
+                      const isMine =
+                        message.sender_role === 'client' ||
+                        message.sender_username === currentUser?.username;
+                      return (
+                        <div key={message.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
+                          <div className={`max-w-[80%] px-3 py-2 rounded-2xl shadow-sm ${
+                            isMine
+                              ? 'bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 text-white'
+                              : 'bg-white text-gray-900 border border-gray-200'
+                          }`}>
+                            <p className="text-sm leading-relaxed mb-1">{message.message}</p>
+                            {message.file_url && (
+                              <div className={`text-xs p-2 rounded-lg ${isMine ? 'bg-white/20' : 'bg-gray-100'}`}>
+                                <a href={makeAbsoluteFileUrl(message.file_url)} target="_blank" rel="noreferrer" className="flex items-center gap-1 hover:underline">
+                                  <i className="ri-attachment-line"></i>{message.file_name || 'Download file'}
+                                </a>
+                              </div>
+                            )}
+                            <p className={`text-[10px] flex items-center gap-1 ${isMine ? 'text-indigo-100' : 'text-gray-500'}`}>
+                              <i className="ri-user-line"></i>{isMine ? 'You' : (selectedTask.assigned_admin?.full_name || 'Expert')} • {new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {isTyping && (
+                      <div className="flex justify-start">
+                        <div className="bg-gray-100 text-gray-600 px-3 py-2 rounded-2xl text-xs flex items-center gap-1">
+                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                          <span className="ml-2">Expert is typing…</span>
+                        </div>
+                      </div>
+                    )}
+                    <div ref={chatEndRef} />
+                  </>
                 )}
               </div>
-            )}
-          </div>
-        </div>
-      </div>
 
-      {/* Create Task Modal */}
+              {/* Composer */}
+              <div className="border-t border-gray-200 p-2 bg-white">
+                {uploadedFiles.length > 0 && (
+                  <div className="mb-1 flex flex-wrap gap-2">
+                    {uploadedFiles.map((file, index) => (
+                      <div key={index} className="flex items-center gap-2 bg-purple-50 px-2 py-1 rounded-lg text-xs">
+                        <i className="ri-file-line text-purple-600"></i>
+                        <span className="text-purple-800">{file.name}</span>
+                        <button onClick={() => removeFile(index)} className="text-purple-600 hover:text-purple-800"><i className="ri-close-line"></i></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  <Input value={newMessage} onChange={handleMessageInputChange} onKeyPress={handleKeyPress} placeholder="Type your message..." className="flex-1 h-9" />
+                  <input ref={fileInputRef} type="file" multiple onChange={handleFileUpload} className="hidden" />
+                  <Button onClick={() => fileInputRef.current?.click()} variant="outline" className="h-9 px-2"><i className="ri-attachment-line"></i></Button>
+                  <Button onClick={sendMessage} disabled={!newMessage.trim() && uploadedFiles.length === 0} className="bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 text-white px-4 h-9">
+                    <i className="ri-send-plane-fill"></i>
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Create Task Modal — dropdowns restored */}
       {showCreateTask && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-2xl animate-slide-up max-h-[90vh] overflow-y-auto">
@@ -1499,12 +1003,61 @@ export default function ClientDashboard() {
               </button>
             </div>
 
-            <form onSubmit={createTask} className="space-y-4">
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                showToast('Submitting…', 'We\'re creating your assignment now.');
+                const form = new FormData();
+                form.append('title', taskForm.title);
+                form.append('description', taskForm.description);
+                form.append('subject', taskForm.subject);
+                form.append('education_level', taskForm.education_level);
+                form.append('deadline', taskForm.deadline);
+                form.append('timezone_str', taskForm.timezone);
+                form.append('proposed_budget', taskForm.budget);
+                uploadedFiles.forEach(f => form.append('file', f));
+
+                const tempId = Date.now();
+                const optimistic = normalizeTask({
+                  id: tempId,
+                  title: taskForm.title,
+                  description: taskForm.description,
+                  subject: taskForm.subject,
+                  education_level: taskForm.education_level,
+                  deadline: taskForm.deadline,
+                  timezone_str: taskForm.timezone,
+                  proposed_budget: parseFloat(taskForm.budget || '0'),
+                  status: 'submitted',
+                  negotiation_status: 'pending_admin_review'
+                });
+
+                setTasks(prev => [optimistic, ...prev]);
+                setSelectedTask(optimistic);
+                setShowCreateTask(false);
+
+                try {
+                  const created = await apiService.postFormData<Partial<Task>>('/tasks/', form);
+                  const real = normalizeTask(created);
+                  setTasks(prev => prev.map(t => t.id === tempId ? real : t));
+                  setSelectedTask(real);
+                  showToast('Success', 'Task submitted successfully!');
+                } catch (err: any) {
+                  setTasks(prev => prev.filter(t => t.id !== tempId));
+                  if (selectedTask?.id === tempId) setSelectedTask(null);
+                  showToast('Error', 'Failed to create task', 'destructive');
+                  setShowCreateTask(true);
+                } finally {
+                  setTaskForm({ title: '', description: '', subject: '', education_level: '', deadline: '', timezone: 'America/New_York', budget: '' });
+                  setUploadedFiles([]);
+                }
+              }}
+              className="space-y-4"
+            >
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Assignment Title</label>
                 <Input
                   value={taskForm.title}
-                  onChange={(e) => setTaskForm(prev => ({ ...prev, title: e.target.value }))}
+                  onChange={e => setTaskForm(p => ({ ...p, title: e.target.value }))}
                   placeholder="e.g., Research Paper on Climate Change"
                   className="py-2"
                   required
@@ -1516,37 +1069,24 @@ export default function ClientDashboard() {
                   <label className="block text-sm font-medium text-gray-700 mb-2">Subject</label>
                   <select
                     value={taskForm.subject}
-                    onChange={(e) => setTaskForm(prev => ({ ...prev, subject: e.target.value }))}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                    onChange={(e) => setTaskForm(p => ({ ...p, subject: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
                     required
                   >
                     <option value="">Select subject</option>
-                    <option value="Mathematics">Mathematics</option>
-                    <option value="Physics">Physics</option>
-                    <option value="Chemistry">Chemistry</option>
-                    <option value="Biology">Biology</option>
-                    <option value="Computer Science">Computer Science</option>
-                    <option value="English Literature">English Literature</option>
-                    <option value="History">History</option>
-                    <option value="Economics">Economics</option>
-                    <option value="Psychology">Psychology</option>
-                    <option value="Environmental Science">Environmental Science</option>
-                    <option value="Other">Other</option>
+                    {SUBJECT_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Education Level</label>
                   <select
                     value={taskForm.education_level}
-                    onChange={(e) => setTaskForm(prev => ({ ...prev, education_level: e.target.value }))}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                    onChange={(e) => setTaskForm(p => ({ ...p, education_level: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
                     required
                   >
                     <option value="">Select level</option>
-                    <option value="High School">High School</option>
-                    <option value="Undergraduate">Undergraduate</option>
-                    <option value="Graduate">Graduate</option>
-                    <option value="PhD">PhD</option>
+                    {LEVEL_OPTIONS.map(l => <option key={l} value={l}>{l}</option>)}
                   </select>
                 </div>
               </div>
@@ -1557,7 +1097,7 @@ export default function ClientDashboard() {
                   <Input
                     type="datetime-local"
                     value={taskForm.deadline}
-                    onChange={(e) => setTaskForm(prev => ({ ...prev, deadline: e.target.value }))}
+                    onChange={e => setTaskForm(p => ({ ...p, deadline: e.target.value }))}
                     className="py-2"
                     required
                   />
@@ -1566,8 +1106,8 @@ export default function ClientDashboard() {
                   <label className="block text-sm font-medium text-gray-700 mb-2"><i className="ri-time-zone-line mr-1"></i>Your Timezone</label>
                   <select
                     value={taskForm.timezone}
-                    onChange={(e) => setTaskForm(prev => ({ ...prev, timezone: e.target.value }))}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                    onChange={(e) => setTaskForm(p => ({ ...p, timezone: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
                     required
                   >
                     {timezones.map(tz => (
@@ -1582,7 +1122,7 @@ export default function ClientDashboard() {
                 <Input
                   type="number"
                   value={taskForm.budget}
-                  onChange={(e) => setTaskForm(prev => ({ ...prev, budget: e.target.value }))}
+                  onChange={e => setTaskForm(p => ({ ...p, budget: e.target.value }))}
                   placeholder="e.g., 150"
                   min="0"
                   step="10"
@@ -1596,7 +1136,7 @@ export default function ClientDashboard() {
                 <label className="block text-sm font-medium text-gray-700 mb-2">Assignment Description</label>
                 <Textarea
                   value={taskForm.description}
-                  onChange={(e) => setTaskForm(prev => ({ ...prev, description: e.target.value }))}
+                  onChange={e => setTaskForm(p => ({ ...p, description: e.target.value }))}
                   placeholder="Describe your assignment requirements in detail..."
                   rows={4}
                   className="text-sm"
@@ -1607,7 +1147,7 @@ export default function ClientDashboard() {
               {/* File Upload Section */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Upload Assignment Files</label>
-                <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-400 transition-colors">
+                <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-purple-400 transition-colors">
                   <input type="file" multiple onChange={handleFileUpload} className="hidden" id="task-files" />
                   <label htmlFor="task-files" className="cursor-pointer">
                     <i className="ri-upload-cloud-line text-4xl text-gray-400 mb-3"></i>
@@ -1618,11 +1158,11 @@ export default function ClientDashboard() {
                 {uploadedFiles.length > 0 && (
                   <div className="mt-3 space-y-2">
                     {uploadedFiles.map((file, index) => (
-                      <div key={index} className="flex items-center justify-between p-2 bg-blue-50 rounded-lg">
+                      <div key={index} className="flex items-center justify-between p-2 bg-purple-50 rounded-lg">
                         <div className="flex items-center gap-2">
-                          <i className="ri-file-line text-blue-600 text-sm"></i>
-                          <span className="text-blue-800 text-sm">{file.name}</span>
-                          <span className="text-xs text-blue-600">({(file.size / 1024 / 1024).toFixed(1)} MB)</span>
+                          <i className="ri-file-line text-purple-600 text-sm"></i>
+                          <span className="text-purple-800 text-sm">{file.name}</span>
+                          <span className="text-xs text-purple-700">({(file.size / 1024 / 1024).toFixed(1)} MB)</span>
                         </div>
                         <button type="button" onClick={() => removeFile(index)} className="text-red-600 hover:text-red-800 cursor-pointer text-sm">
                           <i className="ri-close-line"></i>
@@ -1633,15 +1173,15 @@ export default function ClientDashboard() {
                 )}
               </div>
 
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+              <div className="bg-purple-50 border border-purple-200 rounded-lg p-3">
                 <div className="flex items-start gap-2">
-                  <i className="ri-information-line text-blue-600 text-sm mt-0.5"></i>
+                  <i className="ri-information-line text-purple-700 text-sm mt-0.5"></i>
                   <div>
-                    <h4 className="font-bold text-blue-900 text-sm mb-1">What happens next?</h4>
-                    <ul className="text-xs text-blue-800 space-y-0.5">
+                    <h4 className="font-bold text-purple-900 text-sm mb-1">What happens next?</h4>
+                    <ul className="text-xs text-purple-800 space-y-0.5">
                       <li>• Expert will be notified via email immediately</li>
-                      <li>• You'll receive budget confirmation or counter-offer within 24 hours</li>
-                      <li>• Free withdrawal available for 48 hours after submission</li>
+                      <li>• You'll receive a budget confirmation or counter-offer</li>
+                      <li>• Free withdrawal window may apply</li>
                       <li>• Real-time updates and notifications throughout the process</li>
                     </ul>
                   </div>
@@ -1652,7 +1192,7 @@ export default function ClientDashboard() {
                 <Button type="button" variant="outline" onClick={() => setShowCreateTask(false)} className="flex-1 py-2 text-sm whitespace-nowrap">
                   Cancel
                 </Button>
-                <Button type="submit" className="flex-1 bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 hover:from-blue-700 hover:via-purple-700 hover:to-indigo-700 text-white py-2 text-sm whitespace-nowrap">
+                <Button type="submit" className="flex-1 bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 text-white py-2 text-sm whitespace-nowrap">
                   <i className="ri-send-plane-fill mr-1"></i>
                   Submit Assignment
                 </Button>
@@ -1663,7 +1203,7 @@ export default function ClientDashboard() {
       )}
 
       {/* Budget Negotiation Modal */}
-      {showBudgetNegotiation && (
+      {showBudgetNegotiation && selectedTask && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl animate-slide-up">
             <div className="text-center mb-6">
@@ -1673,41 +1213,19 @@ export default function ClientDashboard() {
               <h3 className="text-2xl font-bold text-gray-900 mb-2">Counter Offer</h3>
               <p className="text-gray-600">Propose your budget for this assignment</p>
             </div>
-
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Your Counter-Offer (USD)</label>
-                <Input
-                  type="number"
-                  value={counterBudget}
-                  onChange={(e) => setCounterBudget(e.target.value)}
-                  placeholder="Enter your budget"
-                  min="0"
-                  step="10"
-                  className="text-lg py-3"
-                  required
-                />
+                <Input type="number" value={counterBudget} onChange={(e) => setCounterBudget(e.target.value)} min="0" step="10" className="text-lg py-3" required />
               </div>
-
               <div className="bg-gray-50 rounded-lg p-4">
-                <div className="flex justify-between text-sm text-gray-600 mb-1">
-                  <span>Expert's Offer:</span>
-                  <span className="font-bold">${selectedTask?.admin_counter_budget}</span>
-                </div>
-                <div className="flex justify-between text-sm text-gray-600">
-                  <span>Your Original Budget:</span>
-                  <span className="font-bold">${selectedTask?.proposed_budget}</span>
-                </div>
+                <div className="flex justify-between text-sm text-gray-600 mb-1"><span>Expert's Offer:</span><span className="font-bold">${selectedTask.admin_counter_budget}</span></div>
+                <div className="flex justify-between text-sm text-gray-600"><span>Your Original Budget:</span><span className="font-bold">${selectedTask.proposed_budget}</span></div>
               </div>
             </div>
-
             <div className="flex gap-3 mt-6">
-              <Button onClick={() => setShowBudgetNegotiation(false)} variant="outline" className="flex-1 whitespace-nowrap">
-                Cancel
-              </Button>
-              <Button onClick={() => respondToBudgetNegotiation('counter')} disabled={!counterBudget} className="flex-1 bg-orange-600 hover:bg-orange-700 text-white whitespace-nowrap">
-                Send Counter-Offer
-              </Button>
+              <Button onClick={() => setShowBudgetNegotiation(false)} variant="outline" className="flex-1">Cancel</Button>
+              <Button onClick={() => respondToBudgetNegotiation('counter')} disabled={!counterBudget} className="flex-1 bg-orange-600 hover:bg-orange-700 text-white">Send Counter-Offer</Button>
             </div>
           </div>
         </div>
@@ -1724,7 +1242,6 @@ export default function ClientDashboard() {
               <h3 className="text-2xl font-bold text-gray-900 mb-2">Withdraw Assignment</h3>
               <p className="text-gray-600">Are you sure you want to withdraw this assignment?</p>
             </div>
-
             <div className="bg-gray-50 rounded-xl p-4 mb-6">
               <p className="text-sm text-gray-700 mb-2"><strong>Assignment:</strong> {selectedTask.title}</p>
               <p className="text-sm text-gray-700 mb-2"><strong>Status:</strong> {formatStatus(selectedTask.status)}</p>
@@ -1732,21 +1249,11 @@ export default function ClientDashboard() {
             </div>
             <div className="mb-6">
               <label className="block text-sm font-medium text-gray-700 mb-2">Reason for Withdrawal (Optional)</label>
-              <Textarea
-                value={withdrawalReason}
-                onChange={(e) => setWithdrawalReason(e.target.value)}
-                placeholder="Please explain why you're withdrawing..."
-                rows={3}
-                className="text-sm"
-              />
+              <Textarea value={withdrawalReason} onChange={(e) => setWithdrawalReason(e.target.value)} rows={3} className="text-sm" />
             </div>
             <div className="flex gap-3">
-              <Button onClick={() => setShowWithdrawModal(false)} variant="outline" className="flex-1 whitespace-nowrap">
-                Cancel
-              </Button>
-              <Button onClick={withdrawTask} className="flex-1 bg-red-600 hover:bg-red-700 text-white whitespace-nowrap">
-                Withdraw Assignment
-              </Button>
+              <Button onClick={() => setShowWithdrawModal(false)} variant="outline" className="flex-1">Cancel</Button>
+              <Button onClick={withdrawTask} className="flex-1 bg-red-600 hover:bg-red-700 text-white">Withdraw Assignment</Button>
             </div>
           </div>
         </div>
@@ -1762,34 +1269,23 @@ export default function ClientDashboard() {
                 <i className="ri-close-line text-xl text-gray-600"></i>
               </button>
             </div>
-
             <div className="mb-6">
               <label className="block text-lg font-bold text-gray-700 mb-3">Revision Feedback</label>
-              <Textarea
-                value={revisionFeedback}
-                onChange={(e) => setRevisionFeedback(e.target.value)}
-                placeholder="Please describe what changes you'd like to see..."
-                rows={6}
-                className="text-lg"
-                required
-              />
+              <Textarea value={revisionFeedback} onChange={(e) => setRevisionFeedback(e.target.value)} placeholder="Please describe what changes you'd like to see..." rows={6} className="text-lg" required />
             </div>
             <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6">
               <div className="flex items-start gap-3">
                 <i className="ri-information-line text-blue-600 text-xl mt-1"></i>
                 <div>
                   <h4 className="font-bold text-blue-900 mb-1">Revision Process</h4>
-                  <p className="text-sm text-blue-800">The expert will be notified immediately and will work on your requested changes. You'll receive email updates on the progress.</p>
+                  <p className="text-sm text-blue-800">Your expert will be notified immediately and will work on your requested changes.</p>
                 </div>
               </div>
             </div>
             <div className="flex gap-3">
-              <Button onClick={() => setShowRevisionModal(false)} variant="outline" className="flex-1 whitespace-nowrap">
-                Cancel
-              </Button>
-              <Button onClick={requestRevision} disabled={!revisionFeedback.trim()} className="flex-1 bg-orange-600 hover:bg-orange-700 text-white whitespace-nowrap">
-                <i className="ri-send-plane-fill mr-2"></i>
-                Request Revision
+              <Button onClick={() => setShowRevisionModal(false)} variant="outline" className="flex-1">Cancel</Button>
+              <Button onClick={requestRevision} disabled={!revisionFeedback.trim()} className="flex-1 bg-orange-600 hover:bg-orange-700 text-white">
+                <i className="ri-send-plane-fill mr-2"></i>Request Revision
               </Button>
             </div>
           </div>
@@ -1804,5 +1300,5 @@ export default function ClientDashboard() {
         .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
       `}</style>
     </div>
-  )
+  );
 }
