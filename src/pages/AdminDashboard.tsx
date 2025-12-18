@@ -59,7 +59,26 @@ const Toast = ({ title, description, variant }: { title: string; description: st
 };
 
 /* ============== Helpers ============== */
-// Normalize/defend against undefined arrays & counts from API/WS (prevents `.length` crashes)
+const stripUndefined = <T extends object>(obj: T): Partial<T> =>
+  Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>;
+
+/** Robust de-dupe: prefer server IDs; fall back to sender-role + message + timestamp slice */
+interface ChatMessage { id: number; message: string; file?: string; file_name?: string; file_url?: string; is_read: boolean; created_at: string; sender: string; sender_role: 'admin' | 'client' }
+const normalizeIso = (s?: string) => (s ? s.slice(0, 19) : '');
+const dedupeMessages = (arr: ChatMessage[]) => {
+  const byKey = new Map<string, ChatMessage>();
+  for (const m of arr) {
+    const k = m.id && m.id < 1_000_000
+      ? `id:${m.id}`
+      : `k:${m.sender_role}|${m.message}|${normalizeIso(m.created_at)}`;
+    if (!byKey.has(k)) byKey.set(k, m);
+  }
+  return Array.from(byKey.values()).sort(
+    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  );
+};
+
+// Normalize/defend against undefined arrays from API/WS
 const normalizeTask = (t: Partial<Task>): Task => ({
   id: t.id as number,
   task_id: t.task_id ?? '',
@@ -98,10 +117,6 @@ const normalizeTask = (t: Partial<Task>): Task => ({
   can_withdraw_free: !!t.can_withdraw_free,
   reject_reason: t.reject_reason ?? ''
 });
-
-// Strip undefined keys from partial WS payloads before merging (avoid clobbering arrays with undefined)
-const stripUndefined = <T extends object>(obj: T): Partial<T> =>
-  Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>;
 
 /* ============== WebSocket Hook ============== */
 const useWebSocketWithReconnect = (url: string | null, onMessage: (data: any) => void, deps: any[] = []) => {
@@ -162,9 +177,6 @@ interface Task {
 }
 interface TaskFile { id: number; name: string; file_type: string; size: string; uploaded_by: number; uploaded_by_name: string; uploaded_at: string; description: string; file_url: string }
 interface Revision { id: number; requested_by: number; requested_by_name: string; requested_at: string; feedback: string; status: 'requested'|'in_progress'|'completed'|'cancelled'; completed_at?: string; admin_notes: string }
-interface ChatMessage { id: number; message: string; file?: string; file_name?: string; file_url?: string; is_read: boolean; created_at: string; sender: string; sender_role: 'admin' | 'client' }
-interface TaskStats { total: number; new_requests: number; active: number; under_review: number; completed: number; recent: number }
-interface AdminStats { assigned_tasks: number; completed_tasks: number; total_earnings: number; rating: number }
 
 /* ==========
    Utilities
@@ -213,8 +225,8 @@ export default function AdminDashboard() {
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // stats
-  const [taskStats, setTaskStats] = useState<TaskStats>({ total: 0, new_requests: 0, active: 0, under_review: 0, completed: 0, recent: 0 });
-  const [adminStats, setAdminStats] = useState<AdminStats>({ assigned_tasks: 0, completed_tasks: 0, total_earnings: 0, rating: 0 });
+  const [taskStats, setTaskStats] = useState({ total: 0, new_requests: 0, active: 0, under_review: 0, completed: 0, recent: 0 });
+  const [adminStats, setAdminStats] = useState({ assigned_tasks: 0, completed_tasks: 0, total_earnings: 0, rating: 0 });
 
   // chat state (floating window)
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -228,7 +240,7 @@ export default function AdminDashboard() {
   const [chatMinimized, setChatMinimized] = useState(false);
   const chatRef = useRef<HTMLDivElement>(null);
   const [chatPos, setChatPos] = useState<{ x: number, y: number }>({ x: 16, y: 100 });
-  const [chatSize, setChatSize] = useState<{ w: number, h: number }>({ w: 360, h: 520 });
+  const [chatSize] = useState<{ w: number, h: number }>({ w: 360, h: 520 });
   const draggingRef = useRef<{ startX: number, startY: number, origX: number, origY: number } | null>(null);
 
   // modals
@@ -241,9 +253,6 @@ export default function AdminDashboard() {
   const [negotiationReason, setNegotiationReason] = useState('');
   const [showSubmitFinalModal, setShowSubmitFinalModal] = useState(false);
 
-  // UI & loading
-  const [loading, setLoading] = useState(true);
-
   // notifications dropdown
   const [showNotifPanel, setShowNotifPanel] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
@@ -255,15 +264,11 @@ export default function AdminDashboard() {
   };
 
   /* ======= WebSockets ======= */
-  const { sendMessage: _sendAdminMessage } = useWebSocketWithReconnect('/ws/admin/', (data) => {
+  useWebSocketWithReconnect('/ws/admin/', (data) => {
     if (data.type === 'task_updated' && data.task) {
       const partial = stripUndefined(data.task as Partial<Task>);
-      setTasks(prev =>
-        prev.map(t => (t.id === partial.id ? normalizeTask({ ...t, ...partial }) : t))
-      );
-      setSelectedTask(prev =>
-        prev && prev.id === partial.id ? normalizeTask({ ...prev, ...partial }) : prev
-      );
+      setTasks(prev => prev.map(t => (t.id === partial.id ? normalizeTask({ ...t, ...partial }) : t)));
+      setSelectedTask(prev => prev && prev.id === partial.id ? normalizeTask({ ...prev, ...partial }) : prev);
       loadStats().catch(() => {});
     }
     if (data.type === 'task_created' && data.task) {
@@ -271,7 +276,7 @@ export default function AdminDashboard() {
       setTasks(cur => cur.some(t => t.id === newTask.id) ? cur : [newTask, ...cur]);
       showToast('New Task', `Task #${newTask.id} created`);
     }
-    // incoming message ping with task_id (from client)
+    // increment unread badges (don't push into chatMessages here)
     if (data.type === 'chat_message' && data.task_id && data.message?.sender_role === 'client') {
       const forOpenChat = showChatWindow && selectedTask?.id === data.task_id;
       setTasks(prev => prev.map(t => {
@@ -286,22 +291,29 @@ export default function AdminDashboard() {
     (data) => {
       if (data.type === 'chat_message' && data.message) {
         setChatMessages(prev => {
-          const filtered = prev.filter(msg => !(msg.id > 1000000 && msg.message === data.message.message));
-          return [...filtered, data.message];
+          // Remove any matching optimistic (temp id > 1_000_000 and same text & role), then add server message
+          const scrubbed = prev.filter(
+            m => !(m.id > 1_000_000 && m.message === data.message.message && m.sender_role === data.message.sender_role)
+          );
+          return dedupeMessages([...scrubbed, data.message]);
         });
-        setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
-
-        // if client message and this chat is open -> keep unread at 0 + mark-read best-effort
+        setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 80);
+        // if client message and chat is open -> keep unread at 0 and mark as read
         if (data.message?.sender_role === 'client' && selectedTask && showChatWindow) {
           setTasks(prev => prev.map(t => t.id === selectedTask.id ? { ...t, unread_messages: 0 } : t));
           apiService.post(`/tasks/${selectedTask.id}/mark-read/`).catch(() => {});
         }
       }
       if (data.type === 'user_typing') {
-        if (data.username !== currentUser?.username) setIsTyping(!!data.is_typing);
+        setIsTyping(!!data.is_typing);
+      }
+      if (data.type === 'task_updated' && data.task) {
+        const partial = stripUndefined(data.task as Partial<Task>);
+        setTasks(prev => prev.map(t => (t.id === partial.id ? normalizeTask({ ...t, ...partial }) : t)));
+        setSelectedTask(prev => prev && prev.id === partial.id ? normalizeTask({ ...prev, ...partial }) : prev);
       }
     },
-    [selectedTask?.id, showChatWindow, currentUser?.username]
+    [selectedTask?.id, showChatWindow]
   );
 
   /* ======= Data ======= */
@@ -311,7 +323,6 @@ export default function AdminDashboard() {
 
   const loadInitial = async () => {
     try {
-      setLoading(true);
       const user = await apiService.get<User>('/auth/user/');
       setCurrentUser(user);
 
@@ -325,12 +336,12 @@ export default function AdminDashboard() {
     } catch (e) {
       console.error(e);
       showToast('Error', 'Failed to load dashboard data', 'destructive');
-    } finally { setLoading(false); }
+    }
   };
 
   const loadStats = async () => {
     try {
-      const s = await apiService.get<{ task_stats?: TaskStats; admin_stats?: AdminStats }>('/admin/stats/');
+      const s = await apiService.get<{ task_stats?: any; admin_stats?: any }>('/admin/stats/');
       setTaskStats(s.task_stats ?? { total: 0, new_requests: 0, active: 0, under_review: 0, completed: 0, recent: 0 });
       setAdminStats(s.admin_stats ?? { assigned_tasks: 0, completed_tasks: 0, total_earnings: 0, rating: 0 });
     } catch (e) { console.error(e); }
@@ -339,9 +350,9 @@ export default function AdminDashboard() {
   const loadChat = async (taskId: number) => {
     try {
       const msgs = await apiService.get<ChatMessage[]>(`/tasks/${taskId}/chat/`);
-      setChatMessages(Array.isArray(msgs) ? msgs : []);
-      setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
-      // on load, mark-read
+      setChatMessages(dedupeMessages(Array.isArray(msgs) ? msgs : []));
+      setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 80);
+      // mark-read on load
       try { await apiService.post(`/tasks/${taskId}/mark-read/`); } catch {}
       setTasks(prev => prev.map(t => t.id === taskId ? { ...t, unread_messages: 0 } : t));
     } catch (e) {
@@ -380,7 +391,6 @@ export default function AdminDashboard() {
     setShowNotifPanel(false);
     setShowChatWindow(true);
     setChatMinimized(false);
-    // clear unread immediately (UI + API)
     setTasks(prev => prev.map(x => x.id === task.id ? { ...x, unread_messages: 0 } : x));
     try { await apiService.post(`/tasks/${task.id}/mark-read/`); } catch {}
     loadChat(task.id);
@@ -396,11 +406,12 @@ export default function AdminDashboard() {
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => { setIsTyping(false); handleTyping(false); }, 1000);
   };
-  const handleKeyPress = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
+  const handleKeyDown = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     setUploadedFiles(prev => [...prev, ...files]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
   const removeFile = (i: number) => setUploadedFiles(prev => prev.filter((_, idx) => idx !== i));
 
@@ -409,7 +420,7 @@ export default function AdminDashboard() {
     if (!selectedTask) return;
 
     const optimistic: ChatMessage = {
-      id: Date.now(),
+      id: Date.now(), // temp id > 1_000_000
       message: newMessage.trim(),
       sender: currentUser?.username || 'Admin',
       sender_role: 'admin',
@@ -421,8 +432,10 @@ export default function AdminDashboard() {
 
     try {
       setIsTyping(false); handleTyping(false); if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-      setChatMessages(prev => [...prev, optimistic]);
-      setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+
+      // Add optimistic then scroll
+      setChatMessages(prev => dedupeMessages([...prev, optimistic]));
+      setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 80);
 
       if (uploadedFiles.length) {
         const form = new FormData();
@@ -433,96 +446,54 @@ export default function AdminDashboard() {
         await apiService.post(`/tasks/${selectedTask.id}/chat/`, { message: newMessage.trim() });
       }
 
-      setNewMessage(''); setUploadedFiles([]);
-      setTimeout(() => loadChat(selectedTask.id), 400);
+      // Clear inputs; rely on WS to deliver the canonical message copy.
+      setNewMessage('');
+      setUploadedFiles([]);
+
+      // Fallback sync (in case WS is delayed). This overwrites optimistics with server list.
+      setTimeout(() => loadChat(selectedTask.id), 900);
     } catch (e) {
       console.error('send fail', e);
+      // remove the optimistic on failure
       setChatMessages(prev => prev.filter(m => m.id !== optimistic.id));
       showToast('Error', 'Failed to send message', 'destructive');
     }
   };
 
-  /* ======= Task actions ======= */
-  const acceptTask = async (taskId: number) => {
-    try { await apiService.post(`/admin/tasks/${taskId}/accept/`); showToast('Task Accepted', 'Student has been notified via email.'); }
-    catch (e) { console.error(e); showToast('Error', 'Failed to accept task', 'destructive'); }
-  };
-  const acceptBudget = async (taskId: number) => {
-    const task = tasks.find(t => t.id === taskId); if (!task) return;
-    const agreed = task.proposed_budget || task.admin_counter_budget || task.budget;
-    const optimistic: Task = normalizeTask({ ...task, budget: agreed, negotiation_status: 'accepted', status: 'in_progress' });
-    setTasks(prev => prev.map(t => t.id === taskId ? optimistic : t));
-    setSelectedTask(prev => (prev && prev.id === taskId ? optimistic : prev));
-    try { await apiService.post(`/admin/tasks/${taskId}/accept-budget/`); showToast('Budget Accepted', 'Work will begin shortly. Student has been notified via email.'); }
-    catch (e) {
-      console.error(e);
-      // revert
-      setTasks(prev => prev.map(t => t.id === taskId ? task : t));
-      setSelectedTask(prev => (prev && prev.id === taskId ? task : prev));
-      showToast('Error', 'Failed to accept budget', 'destructive');
-    }
-  };
-  const proposeBudget = async () => {
-    if (!selectedTask || !counterBudget || !negotiationReason.trim()) return;
-    const newAmt = parseFloat(counterBudget);
-    const optimistic: Task = normalizeTask({
-      ...selectedTask,
-      status: 'budget_negotiation',
-      negotiation_status: 'pending_student_response',
-      admin_counter_budget: newAmt,
-      negotiation_reason: negotiationReason.trim()
-    });
-    setTasks(prev => prev.map(t => t.id === selectedTask.id ? optimistic : t));
-    setSelectedTask(optimistic);
-    try {
-      await apiService.post(`/admin/tasks/${selectedTask.id}/propose-budget/`, { amount: newAmt, reason: negotiationReason.trim() });
-      setShowBudgetNegotiation(false); setCounterBudget(''); setNegotiationReason(''); showToast('Counter-Offer Sent', 'Student has been notified.');
-    } catch (e) {
-      console.error(e); showToast('Error', 'Failed to send counter-offer', 'destructive');
-      setTasks(prev => prev.map(t => t.id === selectedTask.id ? selectedTask : t)); setSelectedTask(selectedTask);
-    }
-  };
-  const rejectTask = async () => {
-    if (!selectedTask || !rejectReason.trim()) return;
-    try { await apiService.post(`/admin/tasks/${selectedTask.id}/reject/`, { reason: rejectReason }); setShowRejectModal(false); setRejectReason(''); showToast('Task Rejected', 'Student has been notified.'); }
-    catch (e) { console.error(e); showToast('Error', 'Failed to reject task', 'destructive'); }
-  };
-  const submitForReview = async (taskId: number) => {
-    try { await apiService.post(`/admin/tasks/${taskId}/submit-review/`); showToast('Submitted for Review', 'Task has been submitted for student review.'); }
-    catch (e) { console.error(e); showToast('Error', 'Failed to submit task for review', 'destructive'); }
-  };
-  const markComplete = async (taskId: number) => {
-    try { await apiService.post(`/admin/tasks/${taskId}/mark-complete/`); await loadStats(); showToast('Task Completed', 'Task has been marked as completed.'); }
-    catch (e) { console.error(e); showToast('Error', 'Failed to mark task as complete', 'destructive'); }
-  };
-  const backToProgress = async (taskId: number) => {
-    try { await apiService.post(`/admin/tasks/${taskId}/update-progress/`, { progress: 80 }); }
-    catch (e) { console.error(e); showToast('Error', 'Failed to update task progress', 'destructive'); }
-  };
-  const updateProgress = async () => {
-    if (!selectedTask || !progressUpdate.trim()) return;
-    try {
-      const newP = Math.min(selectedTask.progress + 20, 95);
-      await apiService.post(`/admin/tasks/${selectedTask.id}/update-progress/`, { progress: newP, message: progressUpdate });
-      setShowProgressModal(false); setProgressUpdate(''); showToast('Progress Updated', 'Task progress has been updated.');
-    } catch (e) { console.error(e); showToast('Error', 'Failed to update progress', 'destructive'); }
+  // Authenticated, force-download for all types (no preview)
+  const forceDownload = async (blob: Blob, filename = 'download') => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename || 'download';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
   };
 
-  // Authenticated file download
   const downloadFile = async (file: TaskFile) => {
     try {
       const token = localStorage.getItem('access_token');
-      const fallback = file.file_url || `/files/${file.id}/download/`;
-      const url = fallback.startsWith('http') ? fallback : `${API_BASE}${fallback.startsWith('/') ? '' : '/'}${fallback}`;
-      const sameOrigin = url.startsWith(window.location.origin) || url.startsWith(API_BASE);
-      if (sameOrigin) {
-        const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
-        if (!res.ok) throw new Error(`Download failed (${res.status})`);
+      // Prefer API download route if we have an id (ensures auth + content-disposition)
+      const apiUrl = apiService.url(`/files/${file.id}/download/`);
+      const res = await fetch(apiUrl, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (res.ok) {
         const blob = await res.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = blobUrl; a.download = file.name || 'download';
-        document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(blobUrl);
-      } else { window.open(url, '_blank'); }
+        await forceDownload(blob, file.name || 'download');
+        return;
+      }
+      // Fallback to direct URL (may be absolute or relative)
+      const rawUrl = file.file_url || `/files/${file.id}/download/`;
+      const absUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : `${API_ROOT}${rawUrl.startsWith('/') ? '' : '/'}${rawUrl}`;
+      // Try fetch blob (CORS may block for third-party links)
+      try {
+        const directRes = await fetch(absUrl, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+        const blob = await directRes.blob();
+        await forceDownload(blob, file.name || 'download');
+      } catch {
+        // Last resort: open with download attribute (may still download)
+        const a = document.createElement('a');
+        a.href = absUrl; a.download = file.name || 'download';
+        document.body.appendChild(a); a.click(); a.remove();
+      }
     } catch (err) {
       console.error('Download error:', err);
       setCurrentToast({ title: 'Error', description: 'Failed to download file.', variant: 'destructive' });
@@ -597,7 +568,63 @@ export default function AdminDashboard() {
     }
   };
 
-  /* ======= Action buttons builder (kept responsive) ======= */
+  /* ======= Action buttons builder ======= */
+  const acceptTask = async (taskId: number) => {
+    try { await apiService.post(`/admin/tasks/${taskId}/accept/`); showToast('Task Accepted', 'Student has been notified via email.'); }
+    catch (e) { console.error(e); showToast('Error', 'Failed to accept task', 'destructive'); }
+  };
+  const acceptBudget = async (taskId: number) => {
+    const task = tasks.find(t => t.id === taskId); if (!task) return;
+    const agreed = task.proposed_budget || task.admin_counter_budget || task.budget;
+    const optimistic: Task = normalizeTask({ ...task, budget: agreed, negotiation_status: 'accepted', status: 'in_progress' });
+    setTasks(prev => prev.map(t => t.id === taskId ? optimistic : t));
+    setSelectedTask(prev => (prev && prev.id === taskId ? optimistic : prev));
+    try { await apiService.post(`/admin/tasks/${taskId}/accept-budget/`); showToast('Budget Accepted', 'Work will begin shortly. Student has been notified via email.'); }
+    catch (e) {
+      console.error(e);
+      // revert
+      setTasks(prev => prev.map(t => t.id === taskId ? task : t));
+      setSelectedTask(prev => (prev && prev.id === taskId ? task : prev));
+      showToast('Error', 'Failed to accept budget', 'destructive');
+    }
+  };
+  const proposeBudget = async () => {
+    if (!selectedTask || !counterBudget || !negotiationReason.trim()) return;
+    const newAmt = parseFloat(counterBudget);
+    const optimistic: Task = normalizeTask({
+      ...selectedTask,
+      status: 'budget_negotiation',
+      negotiation_status: 'pending_student_response',
+      admin_counter_budget: newAmt,
+      negotiation_reason: negotiationReason.trim()
+    });
+    setTasks(prev => prev.map(t => t.id === selectedTask.id ? optimistic : t));
+    setSelectedTask(optimistic);
+    try {
+      await apiService.post(`/admin/tasks/${selectedTask.id}/propose-budget/`, { amount: newAmt, reason: negotiationReason.trim() });
+      setShowBudgetNegotiation(false); setCounterBudget(''); setNegotiationReason(''); showToast('Counter-Offer Sent', 'Student has been notified.');
+    } catch (e) {
+      console.error(e); showToast('Error', 'Failed to send counter-offer', 'destructive');
+      setTasks(prev => prev.map(t => t.id === selectedTask.id ? selectedTask : t)); setSelectedTask(selectedTask);
+    }
+  };
+  const rejectTask = async () => {
+    if (!selectedTask || !rejectReason.trim()) return;
+    try { await apiService.post(`/admin/tasks/${selectedTask.id}/reject/`, { reason: rejectReason }); setShowRejectModal(false); setRejectReason(''); showToast('Task Rejected', 'Student has been notified.'); }
+    catch (e) { console.error(e); showToast('Error', 'Failed to reject task', 'destructive'); }
+  };
+  const submitForReview = async (taskId: number) => {
+    try { await apiService.post(`/admin/tasks/${taskId}/submit-review/`); showToast('Submitted for Review', 'Task has been submitted for student review.'); }
+    catch (e) { console.error(e); showToast('Error', 'Failed to submit task for review', 'destructive'); }
+  };
+  const markComplete = async (taskId: number) => {
+    try { await apiService.post(`/admin/tasks/${taskId}/mark-complete/`); await loadStats(); showToast('Task Completed', 'Task has been marked as completed.'); }
+    catch (e) { console.error(e); showToast('Error', 'Failed to mark task as complete', 'destructive'); }
+  };
+  const backToProgress = async (taskId: number) => {
+    try { await apiService.post(`/admin/tasks/${taskId}/update-progress/`, { progress: 80 }); }
+    catch (e) { console.error(e); showToast('Error', 'Failed to update task progress', 'destructive'); }
+  };
   const getActionButtons = (task: Task) => {
     if (task.status === 'awaiting_review') {
       return (
@@ -673,6 +700,7 @@ export default function AdminDashboard() {
   };
 
   /* ======= Loading ======= */
+  const [loading, setLoading] = useState(false);
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 via-emerald-50 to-teal-50 flex items-center justify-center">
@@ -778,7 +806,7 @@ export default function AdminDashboard() {
         </div>
       </header>
 
-      {/* Shell layout: left nav / middle details / right list */}
+      {/* Shell layout */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         <div className="
           h-[calc(100vh-7.5rem)]
@@ -1074,7 +1102,7 @@ export default function AdminDashboard() {
                   <button onClick={() => setChatMinimized(true)} className="w-8 h-8 rounded-lg hover:bg-gray-200 grid place-items-center" title="Minimize">
                     <i className="ri-subtract-line text-lg"></i>
                   </button>
-                  <button onClick={closeChatWindow} className="w-8 h-8 rounded-lg hover:bg-gray-200 grid place-items-center" title="Close">
+                  <button onClick={() => { setShowChatWindow(false); setChatMinimized(false); }} className="w-8 h-8 rounded-lg hover:bg-gray-200 grid place-items-center" title="Close">
                     <i className="ri-close-line text-lg"></i>
                   </button>
                 </div>
@@ -1143,7 +1171,7 @@ export default function AdminDashboard() {
                       </div>
                     )}
                     <div className="flex gap-2">
-                      <Input value={newMessage} onChange={handleMessageInputChange} onKeyPress={handleKeyPress} placeholder="Type your message..." className="flex-1 h-9" />
+                      <Input value={newMessage} onChange={handleMessageInputChange} onKeyDown={handleKeyDown} placeholder="Type your message..." className="flex-1 h-9" />
                       <input ref={fileInputRef} type="file" multiple onChange={handleFileUpload} className="hidden" />
                       <Button onClick={() => fileInputRef.current?.click()} variant="outline" className="h-9 px-2"><i className="ri-attachment-line"></i></Button>
                       <Button onClick={sendMessage} disabled={!newMessage.trim() && uploadedFiles.length === 0} className="bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 text-white px-4 h-9">
@@ -1225,7 +1253,14 @@ export default function AdminDashboard() {
             </div>
             <div className="flex gap-3">
               <Button onClick={() => setShowProgressModal(false)} variant="outline" className="flex-1 whitespace-nowrap">Cancel</Button>
-              <Button onClick={updateProgress} disabled={!progressUpdate.trim()} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white whitespace-nowrap">Update Progress</Button>
+              <Button onClick={async () => {
+                if (!selectedTask || !progressUpdate.trim()) return;
+                try {
+                  const newP = Math.min(selectedTask.progress + 20, 95);
+                  await apiService.post(`/admin/tasks/${selectedTask.id}/update-progress/`, { progress: newP, message: progressUpdate });
+                  setShowProgressModal(false); setProgressUpdate(''); showToast('Progress Updated', 'Task progress has been updated.');
+                } catch (e) { console.error(e); showToast('Error', 'Failed to update progress', 'destructive'); }
+              }} disabled={!progressUpdate.trim()} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white whitespace-nowrap">Update Progress</Button>
             </div>
           </div>
         </div>
@@ -1245,7 +1280,7 @@ export default function AdminDashboard() {
               <p className="text-lg text-gray-700">Upload the completed assignment</p>
             </div>
             <div className="mb-6">
-              <input type="file" multiple onChange={handleFileUpload} className="block w-full text-base text-gray-700 file:mr-6 file:py-3 file:px-6 file:rounded-full file:border-0 file:text-base file:font-semibold file:bg-purple-600 file:text-white hover:file:bg-purple-700 cursor-pointer" />
+              <input type="file" multiple onChange={e => { const f = Array.from(e.target.files || []); setUploadedFiles(f); (e.target as HTMLInputElement).value=''; }} className="block w-full text-base text-gray-700 file:mr-6 file:py-3 file:px-6 file:rounded-full file:border-0 file:text-base file:font-semibold file:bg-purple-600 file:text-white hover:file:bg-purple-700 cursor-pointer" />
             </div>
             {uploadedFiles.length > 0 && (
               <div className="bg-purple-50 rounded-2xl p-6 mb-6">

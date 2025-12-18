@@ -130,6 +130,31 @@ const normalizeTask = (t: Partial<Task>): Task => ({
 const stripUndefined = <T extends object>(obj: T): Partial<T> =>
   Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>;
 
+/* ===== Notifications ===== */
+type NotificationType = 'chat' | 'task';
+interface NotificationItem {
+  id: string;
+  type: NotificationType;
+  taskId?: number;
+  messageId?: number;
+  title: string;
+  preview?: string;
+  created_at: string;
+  read: boolean;
+}
+const NOTIF_STORAGE_KEY = 'client_notifs_v1';
+
+const loadStoredNotifications = (): NotificationItem[] => {
+  try {
+    const raw = localStorage.getItem(NOTIF_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
 /* ============== WebSocket Hook ============== */
 const useWebSocketWithReconnect = (url: string | null, onMessage: (data: any) => void, deps: any[] = []) => {
   const [ws, setWs] = useState<WebSocket | null>(null);
@@ -270,6 +295,8 @@ export default function ClientDashboard() {
   const [newMessage, setNewMessage] = useState('');
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
   const [isTyping, setIsTyping] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const sendingRef = useRef(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout>();
@@ -282,6 +309,15 @@ export default function ClientDashboard() {
   const [chatPos, setChatPos] = useState<{ x: number, y: number }>({ x: 16, y: 100 });
   const [chatSize] = useState<{ w: number, h: number }>({ w: 360, h: 520 });
   const draggingRef = useRef<{ startX: number, startY: number, origX: number, origY: number } | null>(null);
+
+  // notifications
+  const [notifications, setNotifications] = useState<NotificationItem[]>(loadStoredNotifications());
+  const [notifOpen, setNotifOpen] = useState(false);
+
+  // optimistic message correlation map
+  const pendingOptimistic = useRef<Map<string, number>>(new Map());
+  const buildMsgKey = (taskId: number, text: string, hasFile: boolean) =>
+    `${taskId}::${text}::${hasFile ? '1' : '0'}`;
 
   // create task form (with dropdowns restored)
   const SUBJECT_OPTIONS = [
@@ -304,17 +340,53 @@ export default function ClientDashboard() {
     setTimeout(() => setCurrentToast(null), 3000);
   };
 
+  // persist notifications
+  useEffect(() => {
+    try {
+      localStorage.setItem(NOTIF_STORAGE_KEY, JSON.stringify(notifications));
+    } catch {}
+  }, [notifications]);
+
+  const addNotification = (n: Omit<NotificationItem,'id'|'created_at'|'read'> & Partial<Pick<NotificationItem,'read'>>) => {
+    const item: NotificationItem = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      created_at: new Date().toISOString(),
+      read: !!n.read,
+      ...n,
+    };
+    setNotifications(prev => [item, ...prev].slice(0, 100)); // cap to 100 recent
+  };
+  const markAllRead = () => setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+  const markTaskNotifsRead = (taskId: number) => setNotifications(prev => prev.map(n => n.taskId === taskId ? { ...n, read: true } : n));
+  const unreadCount = notifications.filter(n => !n.read).length;
+
   /* ======= WebSockets ======= */
   useWebSocketWithReconnect('/ws/client/', (data) => {
     if (data.type === 'task_updated' && data.task) {
       const partial = stripUndefined(normalizeTask(data.task));
       setTasks(prev => prev.map(t => (t.id === partial.id ? normalizeTask({ ...t, ...partial }) : t)));
       setSelectedTask(prev => (prev && prev.id === partial.id ? normalizeTask({ ...prev, ...partial }) : prev));
+
+      addNotification({
+        type: 'task',
+        taskId: partial.id,
+        title: 'Task updated',
+        preview: `${partial.title || 'Your task'} • ${formatStatus(partial.status as TaskStatus)}`
+      });
+
       showToast('Task Updated', 'Updates received in real-time');
     }
     if (data.type === 'task_created' && data.task) {
       const newTask = normalizeTask(data.task);
       setTasks(cur => cur.some(t => t.id === newTask.id) ? cur : [newTask, ...cur]);
+
+      addNotification({
+        type: 'task',
+        taskId: newTask.id,
+        title: 'Task created',
+        preview: newTask.title
+      });
+
       showToast('New Task', 'Your assignment was created successfully');
     }
   }, []);
@@ -323,10 +395,44 @@ export default function ClientDashboard() {
     selectedTask ? `/ws/task/${selectedTask.id}/` : null,
     (data) => {
       if (data.type === 'chat_message' && data.message) {
+        const msg: ChatMessage = data.message;
+        const incomingTaskId: number | undefined = data.task_id ?? selectedTask?.id;
+
         setChatMessages(prev => {
-          const filtered = prev.filter(msg => !(msg.id > 1000000 && msg.message === data.message.message));
-          return [...filtered, data.message];
+          // If the exact server message id already exists, skip
+          if (prev.some(m => m.id === msg.id)) return prev;
+
+          // Try to replace the optimistic twin (same task, same text, same file presence)
+          if (incomingTaskId) {
+            const key = buildMsgKey(incomingTaskId, msg.message || '', !!msg.file_url);
+            const tempId = pendingOptimistic.current.get(key);
+            if (tempId) {
+              pendingOptimistic.current.delete(key);
+              return prev.map(m => (m.id === tempId ? msg : m));
+            }
+          }
+          // Otherwise append
+          return [...prev, msg];
         });
+
+        // Notifications for admin messages when chat isn't active
+        const fromAdmin = msg.sender_role === 'admin' || msg.sender === 'admin';
+        const chatActive = showChatWindow && !chatMinimized && selectedTask && selectedTask.id === incomingTaskId;
+
+        if (fromAdmin && !chatActive && incomingTaskId) {
+          const t = tasks.find(tt => tt.id === incomingTaskId);
+          addNotification({
+            type: 'chat',
+            taskId: incomingTaskId,
+            messageId: msg.id,
+            title: t?.title || 'New message',
+            preview: msg.message,
+          });
+        }
+        if (fromAdmin && chatActive && incomingTaskId) {
+          markTaskNotifsRead(incomingTaskId);
+        }
+
         setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 80);
       }
       if (data.type === 'user_typing') setIsTyping(!!data.is_typing);
@@ -334,9 +440,15 @@ export default function ClientDashboard() {
         const partial = stripUndefined(normalizeTask(data.task));
         setTasks(prev => prev.map(t => (t.id === partial.id ? normalizeTask({ ...t, ...partial }) : t)));
         setSelectedTask(prev => (prev && prev.id === partial.id ? normalizeTask({ ...prev, ...partial }) : prev));
+        addNotification({
+          type: 'task',
+          taskId: partial.id,
+          title: 'Task updated',
+          preview: `${partial.title || 'Your task'} • ${formatStatus(partial.status as TaskStatus)}`
+        });
       }
     },
-    [selectedTask?.id]
+    [selectedTask?.id, showChatWindow, chatMinimized, tasks]
   );
 
   /* ======= Data ======= */
@@ -346,8 +458,7 @@ export default function ClientDashboard() {
   useEffect(() => {
     const h = chatSize.h;
     setChatPos({ x: 16, y: Math.max(16, window.innerHeight - h - 16) });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadInitial = async () => {
     try {
@@ -369,6 +480,8 @@ export default function ClientDashboard() {
     try {
       const msgs = await apiService.get<ChatMessage[]>(`/tasks/${taskId}/chat/`);
       setChatMessages(Array.isArray(msgs) ? msgs : []);
+      // Opening/switching chat: clear notifs for that task
+      markTaskNotifsRead(taskId);
       setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 80);
     } catch (e) {
       console.error(e); showToast('Error', 'Failed to load chat messages', 'destructive');
@@ -393,7 +506,13 @@ export default function ClientDashboard() {
     window.removeEventListener('mouseup', onDragEnd);
   };
 
-  const openChatWindow = () => { if (selectedTask) { setShowChatWindow(true); setChatMinimized(false); } };
+  const openChatWindow = () => {
+    if (selectedTask) {
+      setShowChatWindow(true);
+      setChatMinimized(false);
+      markTaskNotifsRead(selectedTask.id);
+    }
+  };
   const closeChatWindow = () => { setShowChatWindow(false); setChatMinimized(false); };
 
   const handleTyping = (typing: boolean) => { if (selectedTask) sendTaskMessage({ type: 'typing', is_typing: typing }); };
@@ -403,7 +522,6 @@ export default function ClientDashboard() {
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => { setIsTyping(false); handleTyping(false); }, 1000);
   };
-  const handleKeyPress = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
 
   const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
   const MAX_FILES = 10;
@@ -432,25 +550,21 @@ export default function ClientDashboard() {
     const path = u.startsWith('/') ? u : `/${u}`;
     return `${API_ROOT}${path}`;
   };
-  const downloadFile = async (file: { id: number; name?: string; file_url?: string; file_type?: string }) => {
-    try {
-      if (file.file_url) { window.open(makeAbsoluteFileUrl(file.file_url), '_blank'); return; }
-      const token = localStorage.getItem('access_token');
-      const res = await fetch(apiService.url(`/files/${file.id}/download/`), { headers: token ? { Authorization: `Bearer ${token}` } : {} });
-      if (!res.ok) throw new Error('Download failed');
-      const blob = await res.blob(); const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = file.name || 'download';
-      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-    } catch (e) { console.error(e); showToast('Error', 'Failed to download file', 'destructive'); }
-  };
 
+  // ---- De-duped send path with guard + correlation to WS echo ----
   const sendMessage = async () => {
     if (!newMessage.trim() && uploadedFiles.length === 0) return;
     if (!selectedTask) return;
 
+    if (sendingRef.current) return;
+    sendingRef.current = true;
+    setIsSending(true);
+
+    const text = newMessage.trim();
+    const tempId = Date.now();
     const optimistic: ChatMessage = {
-      id: Date.now(),
-      message: newMessage.trim(),
+      id: tempId,
+      message: text,
       sender_role: 'client',
       created_at: new Date().toISOString(),
       is_read: false,
@@ -459,25 +573,40 @@ export default function ClientDashboard() {
     };
 
     try {
+      // correlate optimistic with future WS echo
+      pendingOptimistic.current.set(
+        buildMsgKey(selectedTask.id, text, uploadedFiles.length > 0),
+        tempId
+      );
+
       setIsTyping(false); handleTyping(false); if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+
       setChatMessages(prev => [...prev, optimistic]);
       setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 60);
 
       if (uploadedFiles.length) {
         const form = new FormData();
-        if (newMessage.trim()) form.append('message', newMessage.trim());
+        if (text) form.append('message', text);
         uploadedFiles.forEach(f => form.append('file', f));
         await apiService.postFormData(`/tasks/${selectedTask.id}/chat/`, form);
       } else {
-        await apiService.post(`/tasks/${selectedTask.id}/chat/`, { message: newMessage.trim() });
+        await apiService.post(`/tasks/${selectedTask.id}/chat/`, { message: text });
       }
 
+      // IMPORTANT: do NOT reload chat here; let the WS echo replace the optimistic one
       setNewMessage(''); setUploadedFiles([]);
-      setTimeout(() => loadChat(selectedTask.id), 350);
     } catch (e) {
       console.error('send fail', e);
-      setChatMessages(prev => prev.filter(m => m.id !== optimistic.id));
+      // remove optimistic on failure
+      setChatMessages(prev => prev.filter(m => m.id !== tempId));
+      // clear correlation
+      pendingOptimistic.current.delete(buildMsgKey(selectedTask.id, text, uploadedFiles.length > 0));
       showToast('Error', 'Failed to send message', 'destructive');
+    } finally {
+      setTimeout(() => {
+        sendingRef.current = false;
+        setIsSending(false);
+      }, 150);
     }
   };
 
@@ -603,7 +732,80 @@ export default function ClientDashboard() {
               </div>
             </div>
 
-            <div className="flex items-center gap-2 sm:gap-3">
+            <div className="relative flex items-center gap-2 sm:gap-3">
+              {/* Notification bell */}
+              <div className="relative">
+                <button
+                  className="relative w-10 h-10 grid place-items-center rounded-xl border border-purple-200 bg-purple-50 hover:bg-purple-100 transition-colors"
+                  onClick={() => setNotifOpen(o => !o)}
+                  aria-label="Notifications"
+                >
+                  <i className="ri-notification-3-line text-purple-700 text-lg" />
+                  {unreadCount > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[11px] leading-[18px] text-center">
+                      {unreadCount > 99 ? '99+' : unreadCount}
+                    </span>
+                  )}
+                </button>
+
+                {/* Dropdown */}
+                {notifOpen && (
+                  <div className="absolute right-0 mt-2 w-80 max-h-[70vh] overflow-auto bg-white border border-gray-200 rounded-2xl shadow-2xl z-50">
+                    <div className="p-3 border-b flex items-center justify-between">
+                      <div className="font-semibold text-gray-900">Notifications</div>
+                      <button
+                        onClick={markAllRead}
+                        className="text-xs text-purple-700 hover:underline"
+                      >
+                        Mark all as read
+                      </button>
+                    </div>
+
+                    {notifications.length === 0 ? (
+                      <div className="p-6 text-center text-gray-500">
+                        <i className="ri-notification-off-line text-3xl text-gray-300 mb-2" />
+                        <div>No notifications yet</div>
+                      </div>
+                    ) : (
+                      <ul className="divide-y">
+                        {notifications.map(n => (
+                          <li key={n.id}>
+                            <button
+                              className={`w-full text-left p-3 flex gap-3 hover:bg-gray-50 ${!n.read ? 'bg-purple-50/40' : ''}`}
+                              onClick={() => {
+                                setNotifications(prev => prev.map(x => x.id === n.id ? { ...x, read: true } : x));
+                                if (n.taskId) {
+                                  const t = tasks.find(tt => tt.id === n.taskId);
+                                  if (t) {
+                                    setSelectedTask(t);
+                                    if (n.type === 'chat') {
+                                      setShowChatWindow(true);
+                                      setChatMinimized(false);
+                                    }
+                                  }
+                                }
+                                setNotifOpen(false);
+                              }}
+                            >
+                              <div className="w-9 h-9 rounded-lg grid place-items-center border flex-shrink-0
+                                border-purple-200 bg-purple-50 text-purple-700">
+                                {n.type === 'chat' ? <i className="ri-message-3-line" /> : <i className="ri-task-line" />}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="text-sm font-semibold text-gray-900 truncate">{n.title}</div>
+                                {n.preview && <div className="text-xs text-gray-600 truncate">{n.preview}</div>}
+                                <div className="text-[10px] text-gray-400 mt-0.5">{new Date(n.created_at).toLocaleString()}</div>
+                              </div>
+                              {!n.read && <span className="ml-auto mt-1 w-2 h-2 rounded-full bg-purple-600 flex-shrink-0" />}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+              </div>
+
               <div className="hidden md:flex items-center gap-2 bg-purple-50 px-3 py-2 rounded-lg border border-purple-200">
                 <i className="ri-time-zone-line text-purple-700"></i>
                 <span className="text-sm text-purple-900">
@@ -797,7 +999,9 @@ export default function ClientDashboard() {
                           <p className="text-xs text-gray-500">{file.size} • {file.uploaded_by_name}</p>
                         </div>
                         <div className="ml-auto shrink-0 w-full sm:w-auto">
-                          <Button size="sm" variant="outline" className="h-9 px-2 w-full sm:w-auto" onClick={() => downloadFile(file)}>
+                          <Button size="sm" variant="outline" className="h-9 px-2 w-full sm:w-auto" onClick={() => {
+                            if (file.file_url) window.open(makeAbsoluteFileUrl(file.file_url), '_blank');
+                          }}>
                             <i className="ri-download-line"></i>
                           </Button>
                         </div>
@@ -849,7 +1053,7 @@ export default function ClientDashboard() {
                 filteredTasks.map(task => (
                   <div
                     key={task.id}
-                    onClick={() => setSelectedTask(task)}
+                    onClick={() => { setSelectedTask(task); markTaskNotifsRead(task.id); }}
                     className={`p-4 mb-2 rounded-xl border transition-colors cursor-pointer ${
                       selectedTask?.id === task.id ? 'bg-purple-50 border-purple-200' : 'bg-white border-gray-200 hover:bg-gray-50'
                     } ${task.status === 'withdrawn' ? 'opacity-50' : ''}`}
@@ -979,10 +1183,26 @@ export default function ClientDashboard() {
                   </div>
                 )}
                 <div className="flex gap-2">
-                  <Input value={newMessage} onChange={handleMessageInputChange} onKeyPress={handleKeyPress} placeholder="Type your message..." className="flex-1 h-9" />
+                  <Input
+                    value={newMessage}
+                    onChange={handleMessageInputChange}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        sendMessage();
+                      }
+                    }}
+                    placeholder="Type your message..."
+                    className="flex-1 h-9"
+                  />
                   <input ref={fileInputRef} type="file" multiple onChange={handleFileUpload} className="hidden" />
                   <Button onClick={() => fileInputRef.current?.click()} variant="outline" className="h-9 px-2"><i className="ri-attachment-line"></i></Button>
-                  <Button onClick={sendMessage} disabled={!newMessage.trim() && uploadedFiles.length === 0} className="bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 text-white px-4 h-9">
+                  <Button
+                    type="button"
+                    onClick={sendMessage}
+                    disabled={isSending || (!newMessage.trim() && uploadedFiles.length === 0)}
+                    className="bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 text-white px-4 h-9"
+                  >
                     <i className="ri-send-plane-fill"></i>
                   </Button>
                 </div>
@@ -1040,6 +1260,15 @@ export default function ClientDashboard() {
                   const real = normalizeTask(created);
                   setTasks(prev => prev.map(t => t.id === tempId ? real : t));
                   setSelectedTask(real);
+
+                  addNotification({
+                    type: 'task',
+                    taskId: real.id,
+                    title: 'Task created',
+                    preview: real.title,
+                    read: true
+                  });
+
                   showToast('Success', 'Task submitted successfully!');
                 } catch (err: any) {
                   setTasks(prev => prev.filter(t => t.id !== tempId));
